@@ -1,6 +1,8 @@
 import os
 from dotenv import load_dotenv, find_dotenv
 import requests
+import streamlit as st
+
 from langchain_openai import ChatOpenAI
 from langchain_community.tools.tavily_search import TavilySearchResults
 from langgraph.prebuilt import create_react_agent
@@ -8,15 +10,25 @@ from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langchain.tools import tool
 
+# Convert learn_langgraph.py sang dạng có HTML bằng streamlit
+# Streamlit là 1 lib python để tạo page HTML đơn giản để demo
+
 _ = load_dotenv(find_dotenv())
 WEATHERSTACK_API_KEY = os.getenv("WEATHERSTACK_API_KEY")
 llm = ChatOpenAI(model="gpt-3.5-turbo")
 
+# Set HTML page by streamlit
+st.set_page_config(
+    page_title="Agentic AI Assistant",
+    page_icon="🤖",
+    layout="centered"
+)
+st.title("🤖 Agentic AI Assistant")
+st.markdown("Search + Weather AI Agent using LangGraph")
+
 # Dùng Tavily để tạo search tool bằng langchain
 # Tavily API Key Free lấy ở trang https://app.tavily.com/playground
 search_tool = TavilySearchResults(max_results=3) # Search và trả về tối đa 3 kết quả
-# response = search_tool.invoke("Who are the top stars of the 2024 Eurocup?")  # trong TH hỏi những câu hỏi vượt quá dữ liệu lưu trữ của OpenAI model, thì nó mới gọi tool search, còn nếu câu hỏi nằm trong knowledge base thì nó không search mà trả luôn kq.
-# print(response)
 
 @tool
 def get_weather_data(city: str) -> str:
@@ -54,5 +66,29 @@ agent_executor = create_react_agent(llm, tools, checkpointer=memory)
 
 config = {"configurable": {"thread_id": "001"}} # thread_id để nhận biết đc cuộc trò truyện này thuộc thread nào
 
-response = agent_executor.invoke({"messages": [HumanMessage(content="Find the capital of Vietnam and then find its current weather.")]}, config)
-print(response)  # Output: {'output': 'The capital of Vietnam is Hanoi. The current weather in Hanoi is as follows:\n- Temperature: 38°C\n- Weather: Dust storm\n- Humidity: 20%'}
+user_query = st.text_input(
+    "Enter your query:",
+    placeholder="Example: Find the capital of Vietnam and current weather"
+)
+
+# Set HTML page by streamlit
+if st.button("Run Agent"):
+    if user_query:
+        with st.spinner("Agent is thinking..."):
+            try:
+                response = agent_executor.invoke(
+                    {
+                        "messages": [
+                            HumanMessage(content=user_query)
+                        ]
+                    },
+                    config
+                )
+                st.success("Response Generated")
+                st.markdown("## Final Response")
+                st.write(response["messages"][-1].content)
+                print(response)
+            except Exception as e:
+                st.error(f"Error: {str(e)}")
+    else:
+        st.warning("Please enter a query")

@@ -12,3 +12,5 @@ httpx<0.28
 sse_starlette
 
 langgraph==0.1.19
+
+streamlit
