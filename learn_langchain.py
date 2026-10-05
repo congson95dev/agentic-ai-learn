@@ -76,7 +76,7 @@ json_parser = SimpleJsonOutputParser()
 # ==============================================================
 
 
-# Output Parser with Pydantic
+# Output Parser (with Pydantic)
 ## Code sau ép output về dạng JSON mà được pre-defined trong Pydantic model
 ## VD với 2 field "setup" và "punchline" như example sau
 class Joke(BaseModel):
@@ -240,14 +240,128 @@ chunks_of_text = text_splitter.split_documents(loaded_document)
 # print(response[0].page_content) # output: 4 câu trả lời gần nhất
 
 ## FAISS
+# from langchain_community.vectorstores import FAISS
+
+# vector_db = FAISS.from_documents(chunks_of_text, OpenAIEmbeddings()) # code này tốn token
+
+# retriever = vector_db.as_retriever(search_kwargs={"k": 4}) # k=4 nghĩa là lấy 4 câu trả lời gần nhất, có thể thay đổi k=1,2,3.. tùy nhu cầu
+
+# question = "What is dswithbappy teaching?"
+
+# response = retriever.invoke(question) # code này tốn token
+
+# print(response) # output: 4 câu trả lời gần nhất
+
+
+# ==============================================================
+
+
+# RAG (Simple)
+# Ngoài ra có chứa LCEL (RunnablePassthrough, RunnableLambda, RunnableParallel) trong Langchain nữa
 from langchain_community.vectorstores import FAISS
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnablePassthrough
+from operator import itemgetter
 
-vector_db = FAISS.from_documents(chunks_of_text, OpenAIEmbeddings()) # code này tốn token
+# vector_db = FAISS.from_documents(chunks_of_text, OpenAIEmbeddings()) # code này tốn token
 
-retriever = vector_db.as_retriever(search_kwargs={"k": 4}) # k=4 nghĩa là lấy 4 câu trả lời gần nhất, có thể thay đổi k=1,2,3.. tùy nhu cầu
+# retriever = vector_db.as_retriever(search_kwargs={"k": 4}) # k=4 nghĩa là lấy 4 câu trả lời gần nhất, có thể thay đổi k=1,2,3.. tùy nhu cầu
 
-question = "What is dswithbappy teaching?"
+template = """Answer the question based only on the following context:
+{context}
+Question: {question}
+Answer in the following language: {language}
+"""
 
-response = retriever.invoke(question) # code này tốn token
+prompt = ChatPromptTemplate.from_template(template)
 
-print(response) # output: 4 câu trả lời gần nhất
+model = ChatOpenAI()
+
+## ở docs có chứa rất nhiều item, như metadata, page_content, và mình chỉ cần page_content thôi, nên dùng function này để lấy page_content
+def format_docs(docs):
+    return "\n\n".join([d.page_content for d in docs])
+
+## ở đây, nhận 3 input là context, question và language.
+## 3 giá trị này được xử lý cùng lúc, bởi vì mình đang dùng {}, dấu này có nghĩa là RunnableParallel - chạy song song
+## context nhận giá trị là content của biến question, sau đó truyền vào retriever, sau đó truyền vào format_docs, format_docs chính là RunnableLambda - lambda function trong Langchain
+## question sẽ được truyền vào sau khi invoke, đồng thời nó ko thông qua bước xử lý nào cả, bởi nó đang dùng RunnablePassthrough()
+## language, tương tự với question, cũng được truyền vào sau khi invoke, và nó cũng ko thông qua bước xử lý nào cả, bởi nó đang dùng itemgetter()
+# chain = (
+#     {"context": itemgetter("question") | retriever | format_docs, "question": RunnablePassthrough(), "language": itemgetter("language")}
+#     | prompt
+#     | model
+#     | StrOutputParser() # output as string
+# )
+
+# response = chain.invoke({"question": "What is dswithbappy teaching?", "language": "Vietnamese"}) # code này tốn token
+
+# print(response) # output: dswithbappy tập trung vào việc giảng dạy về học tập và trí tuệ nhân tạo bằng tiếng Anh.
+
+
+# ==============================================================
+
+
+# Buffer Memory
+## Buffer Memory là 1 loại memory trong langchain, nó lưu trữ các cuộc hội thoại trước đó vào RAM
+## Khi close application thì nó cũng mất memory
+from langchain_core.prompts import (
+    ChatPromptTemplate,
+    MessagesPlaceholder,
+    SystemMessagePromptTemplate,
+    HumanMessagePromptTemplate,
+)
+from langchain.chains import ConversationChain
+from langchain.memory import ConversationBufferMemory, ConversationBufferWindowMemory
+
+prompt = ChatPromptTemplate(
+    messages=[
+        SystemMessagePromptTemplate.from_template(
+            "You are a nice chatbot having a conversation with a human."
+        ),
+        MessagesPlaceholder(variable_name="chat_history"), # must set as "chat_history", otherwise, it won't work
+        HumanMessagePromptTemplate.from_template("{question}")
+    ]
+)
+
+memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True) # must set as "chat_history", otherwise, it won't work
+
+window_memory = ConversationBufferWindowMemory(k=3) # limit memory to the last 3 messages
+
+conversation_window = ConversationChain(
+    llm=chatModel,
+    memory = window_memory,
+    verbose=True # show detail log
+)
+
+## Bởi vì set k=3, nên khi gửi 4 tin nhắn, nó sẽ k nhớ về tin nhắn đầu tiên mà chỉ nhớ về 3 tin nhắn cuối cùng
+# conversation_window({"input": "Hi, my name is Bappy"})
+# conversation_window({"input": "My favorite color is blue"})
+# conversation_window({"input": "My favorite animals are dogs"})
+# conversation_window({"input": "I like to drive a vespa scooter in the city"})
+
+# conversation_window({"input": "What is my name?"}) # output: I'm sorry, but I do not have that information.
+
+# print(conversation_window.memory.chat_memory.messages) # output: [HumanMessage(content='Hi, my name is Bappy'), AIMessage(content="Hello Bappy! It's nice to meet you. How can I assist you today?"), HumanMessage(content='My favorite color is blue'), AIMessage(content='Blue is a popular color choice among many people. It is often associated with calmness, trust, and stability. Is there anything specific you wouldlike to know or talk about related to your favorite color blue?'), HumanMessage(content='My favorite animals are dogs'), AIMessage(content='Dogs are wonderful animals! They are known for their loyalty, companionship, and diverse breeds. From playful puppies to loyal service dogs, there are so many reasons why people love dogs. Do you have a specific breed of dog that is your favorite, or do you just love all dogs in general?'), HumanMessage(content='I like to drive a vespa scooter in the city'), AIMessage(content='Vespa scooters are a classic and stylish mode of transportation, especially in urban areas. They are known for their sleek design, ease of maneuverability in city traffic, and fuel efficiency. Riding a Vespa scooter can be a fun and convenient way to get around town. Have you had any memorable experiences while riding your Vespa in the city?'), HumanMessage(content='What is my name?'), AIMessage(content="I'm sorry, but I do not have that information. If you tell me your name, I can certainly remember it for future reference.")]
+
+
+# Combine Chain
+## Tức là chèn chain 1 vào chain 2
+prompt1 = ChatPromptTemplate.from_template("what is the country {politician} is from?")
+prompt2 = ChatPromptTemplate.from_template(
+    "what continent is the country {country} in? respond in {language}"
+)
+
+model = ChatOpenAI()
+
+chain1 = prompt1 | model | StrOutputParser()
+
+chain2 = (
+    {"country": chain1, "language": itemgetter("language")}
+    | prompt2
+    | model
+    | StrOutputParser()
+)
+
+# response = chain2.invoke({"politician": "Miterrand", "language": "Vietnamese"})
+
+# print(response) # output: Pháp, nước mà François Mitterrand đến từ, nằm ở châu Âu.
