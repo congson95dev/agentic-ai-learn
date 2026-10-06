@@ -66,7 +66,7 @@ config = {"configurable": {"thread_id": "001"}} # thread_id để nhận biết 
 
 
 # ================================================================================================
-# Langgraph example đơn giản về State, Node, Edge
+# Langgraph example về State, Node, Edge, Parallel Execution
 # ================================================================================================
 
 
