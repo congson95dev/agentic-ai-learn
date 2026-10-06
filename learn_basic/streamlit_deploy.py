@@ -14,6 +14,7 @@ from rich import print
 
 # Convert learn_langgraph.py sang dạng có HTML bằng streamlit
 # Streamlit là 1 lib python để tạo page HTML đơn giản để demo
+# Start Command: streamlit run learn_basic/learn_langgraph.py
 
 _ = load_dotenv(find_dotenv())
 WEATHERSTACK_API_KEY = os.getenv("WEATHERSTACK_API_KEY")

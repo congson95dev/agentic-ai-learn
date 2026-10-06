@@ -15,6 +15,9 @@ langgraph==0.1.19
 
 streamlit
 
+# Tavily Search Tool
+tavily-python>=0.3.0
+
 # Web scraping
 beautifulsoup4>=4.12.0
 readability-lxml 
