@@ -70,7 +70,6 @@ config = {"configurable": {"thread_id": "001"}} # thread_id để nhận biết 
 # ================================================================================================
 
 
-
 from langgraph.graph import StateGraph, START, END
 from typing import Annotated, TypedDict
 import operator
