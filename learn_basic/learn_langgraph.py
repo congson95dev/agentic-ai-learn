@@ -7,6 +7,7 @@ from langgraph.prebuilt import create_react_agent
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langchain.tools import tool
+from rich import print
 
 _ = load_dotenv(find_dotenv())
 WEATHERSTACK_API_KEY = os.getenv("WEATHERSTACK_API_KEY")

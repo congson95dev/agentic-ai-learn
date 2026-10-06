@@ -5,6 +5,7 @@ from langchain_core.prompts import ChatPromptTemplate, FewShotChatMessagePromptT
 from langchain.output_parsers.json import SimpleJsonOutputParser
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.pydantic_v1 import BaseModel, Field
+from rich import print
 
 _ = load_dotenv(find_dotenv())
 

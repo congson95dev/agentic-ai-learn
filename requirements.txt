@@ -14,3 +14,12 @@ sse_starlette
 langgraph==0.1.19
 
 streamlit
+
+# Web scraping
+beautifulsoup4>=4.12.0
+readability-lxml 
+trafilatura
+requests>=2.31.0
+
+# Logging / debugging (better print format than the default print of python)
+rich>=13.7.0

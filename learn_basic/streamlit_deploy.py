@@ -10,6 +10,8 @@ from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langchain.tools import tool
 
+from rich import print
+
 # Convert learn_langgraph.py sang dạng có HTML bằng streamlit
 # Streamlit là 1 lib python để tạo page HTML đơn giản để demo
 

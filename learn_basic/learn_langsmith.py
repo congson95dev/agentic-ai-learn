@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
 from langchain.output_parsers.json import SimpleJsonOutputParser
+from rich import print
 
 load_dotenv()
 
