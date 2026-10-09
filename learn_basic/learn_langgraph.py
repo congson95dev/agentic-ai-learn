@@ -63,6 +63,9 @@
 # print(response)  # Output: {'output': 'The capital of Vietnam is Hanoi. The current weather in Hanoi is as follows:\n- Temperature: 38°C\n- Weather: Dust storm\n- Humidity: 20%'}
 
 
+
+
+
 # ================================================================================================
 # Langgraph workflow example về State, Node, Edge, Parallel Execution, Conditional Branching, Iterative (Retry)
 # Flow detail check ở temperature_workflow.png
@@ -306,12 +309,75 @@ workflow = graph.compile()
 initial_state = {'temp_celsius': 28.5, "iteration": 1, "max_iteration": 3}
 
 # Execute the graph
-final_state = workflow.invoke(initial_state)
-print(final_state)
+# final_state = workflow.invoke(initial_state)
+# print(final_state)
 
 # Visualize the graph
-png_data = workflow.get_graph().draw_mermaid_png()
-with open("learn_basic/temperature_workflow.png", "wb") as f:
-    f.write(png_data)
+# png_data = workflow.get_graph().draw_mermaid_png()
+# with open("learn_basic/temperature_workflow.png", "wb") as f:
+#     f.write(png_data)
 
 
+
+
+
+# ================================================================================================
+# Demo use-case của checkpointer trong langgraph về fault-tolerance (retry khi có lỗi xảy ra)
+# Ở step 2, ấn Ctrl C để giả lập bị lỗi, lúc này nó tự chạy, nhưng thay vì chạy lại từ đầu, nó chạy từ step 2.
+# ================================================================================================
+
+from langgraph.graph import StateGraph, START, END
+from typing import TypedDict
+from langgraph.checkpoint.memory import InMemorySaver
+import time
+from rich import print
+
+
+# Define the state
+class CrashState(TypedDict):
+    input: str
+    step1: str
+    step2: str
+    step3: str
+
+# Define steps
+def step_1(state: CrashState) -> CrashState:
+    print("✅ Step 1 executed")
+    return {"step1": "done", "input": state["input"]}
+
+def step_2(state: CrashState) -> CrashState:
+    print("⏳ Step 2 hanging... now manually interrupt from the notebook toolbar (STOP button)")
+    time.sleep(30)  # Simulate long-running hang
+    return {"step2": "done"}
+
+def step_3(state: CrashState) -> CrashState:
+    print("✅ Step 3 executed")
+    return {"step3": "done"}
+
+# Build the graph
+builder = StateGraph(CrashState)
+builder.add_node("step_1", step_1)
+builder.add_node("step_2", step_2)
+builder.add_node("step_3", step_3)
+
+builder.set_entry_point("step_1")
+builder.add_edge("step_1", "step_2")
+builder.add_edge("step_2", "step_3")
+builder.add_edge("step_3", END)
+
+checkpointer = InMemorySaver()
+graph = builder.compile(checkpointer=checkpointer)
+
+# Execute the graph
+try:
+    print("▶️ Running graph: Please manually interrupt during Step 2...") # simulate the crash in step 2
+    graph.invoke({"input": "start"}, config={"configurable": {"thread_id": 'thread-1'}})
+except KeyboardInterrupt:
+    print("❌ Kernel manually interrupted (crash simulated).")
+
+# Re-run the graph
+print("\n🔁 Re-running the graph to demonstrate fault tolerance...")
+final_state = graph.invoke(None, config={"configurable": {"thread_id": 'thread-1'}})
+print("\n✅ Final State:", final_state)
+
+print(list(graph.get_state_history({"configurable": {"thread_id": 'thread-1'}}))) # At this point, you should see it running from step 2 instead of start over from step 1
