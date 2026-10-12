@@ -75,7 +75,7 @@
 import operator
 from rich import print
 
-from langchain.messages import HumanMessage, HumanMessage, SystemMessage
+from langchain.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, START, END
 from typing import Annotated, Literal, TypedDict

@@ -1,31 +1,44 @@
-import os
-from dotenv import load_dotenv
+from langgraph.graph import StateGraph, START, END
 from langchain_openai import ChatOpenAI
-from langchain_core.prompts import PromptTemplate
-from langchain.output_parsers.json import SimpleJsonOutputParser
+from langchain.messages import HumanMessage
+from dotenv import load_dotenv, find_dotenv
+from typing import TypedDict
+import time
 from rich import print
 
-load_dotenv()
+_ = load_dotenv(find_dotenv())
+llm = ChatOpenAI(model="gpt-3.5-turbo")
 
-# Set OpenAI API Key
-os.environ["OPENAI_API_KEY"]=os.getenv("OPENAI_API_KEY")
+# Define the state
+class PythonTipState(TypedDict):
+    input: str
+    response: str
 
-# Set LangChain API Key and enable tracing
-# Sau khi đã set API Key và bật tracing, mỗi khi invoke, sẽ lưu trực tiếp logs lên https://smith.langchain.com/, có thể vào trang đó để monitoring
-os.environ["LANGCHAIN_TRACING_V2"]="true"
-os.environ["LANGCHAIN_API_KEY"]=os.getenv("LANGCHAIN_API_KEY")
+# Define steps
+def generate_python_tips(state: PythonTipState):
+    prompt = [
+        HumanMessage(content=f"""Give 5 tips to learn Python programming effectively.""")
+    ]
+    response = llm.invoke(prompt).content
+    state['response'] = response
 
-# Init Langchain
-llmModel = ChatOpenAI(model="gpt-3.5-turbo-0125")
+    return state
 
-json_prompt = PromptTemplate.from_template(
-    "Return a JSON object with an `answer` key that answers the following question: {question}"
-)
+# Build the graph
+builder = StateGraph(PythonTipState)
+builder.add_node("generate_python_tips", generate_python_tips)
 
-json_parser = SimpleJsonOutputParser()
+builder.add_edge(START, "generate_python_tips")
+builder.add_edge("generate_python_tips", END)
 
-json_chain = json_prompt | llmModel | json_parser
+workflow = builder.compile()
 
-res  = json_chain.invoke({"question": "What is the biggest country?"})
-print(res) # Output: {'answer': 'Russia'}
-# Sau khi invoke, logs đã đc lưu trực tiếp logs lên https://smith.langchain.com/, có thể vào trang đó để monitoring
+# Enable tracing in Langsmith
+# Sau khi đã bật tracing, mỗi khi invoke, sẽ lưu trực tiếp logs lên https://smith.langchain.com/, có thể vào trang đó để monitoring
+CONFIG = {
+    "run_name": "chat_trace"
+}
+
+# Execute the graph
+result = workflow.invoke({"input": ""}, config=CONFIG) # Sau khi invoke, logs đã đc lưu trực tiếp logs lên https://smith.langchain.com/, có thể vào trang đó để monitoring
+print(result)
