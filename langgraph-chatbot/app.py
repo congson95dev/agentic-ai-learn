@@ -1,46 +1,7 @@
-from langgraph.graph import StateGraph, START, END
-from typing import TypedDict, Annotated
-from langchain_core.messages import BaseMessage
-from langchain_openai import ChatOpenAI
-from dotenv import load_dotenv
-from langgraph.checkpoint.sqlite import SqliteSaver
-from langgraph.graph.message import add_messages
-import sqlite3
-from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage, AIMessage
 import streamlit as st
-import uuid 
-
-load_dotenv()
-
-llm = ChatOpenAI(model="gpt-3.5-turbo")
-
-class ChatState(TypedDict):
-    messages: Annotated[list[BaseMessage], add_messages]
-
-def chat_node(state: ChatState):
-    messages = state['messages']
-    response = llm.invoke(messages)
-    return {'messages': [response]}
-
-# Init SQLite as DB Memory
-# "check_same_thread = False" allow to have multiple threads, it's suitable for chatbot app
-conn = sqlite3.connect(database="langgraph-chatbot/chatbot.db", check_same_thread=False)
-checkpoint = SqliteSaver(conn)
-
-graph = StateGraph(ChatState)
-
-# Add nodes
-graph.add_node('chat_node', chat_node)
-
-# Add edges
-graph.add_edge(START, 'chat_node')
-graph.add_edge('chat_node', END)
-
-# Compile
-chatbot = graph.compile(checkpointer=checkpoint)
-
-def generate_thread_id():
-    return str(uuid.uuid4())
+from backend import chatbot
+from helper import generate_thread_id, get_all_thread_ids, load_conversation
 
 def assign_thread(thread_id):
     if thread_id not in st.session_state["chat_threads"]:
@@ -53,28 +14,6 @@ def reset_chat():
     st.session_state["thread_id"] = generate_thread_id()
     assign_thread(st.session_state["thread_id"])
     st.session_state["message_history"] = []
-
-# Load a previous conversation from the LangGraph checkpointer
-def load_conversation(thread_id):
-    # Get the saved state for the selected thread
-    state = chatbot.get_state(
-        config={
-            "configurable": {
-                "thread_id": thread_id
-            }
-        }
-    )
-
-    # Return saved messages
-    # Return an empty list if no messages are available
-    return state.values.get("messages", [])
-
-def get_all_thread_ids():
-    all_threads = set()
-    for ckpt in checkpoint.list(None):
-        all_threads.add(ckpt.config['configurable']['thread_id'])
-
-    return list(all_threads)
 
 st.title("Agentic Chatbot with LangGraph")
 
@@ -152,6 +91,12 @@ for thread_id in st.session_state["chat_threads"][::-1]:
 # Display message as user or AI bubble depending on the role of the message
 for message in st.session_state["message_history"]:
     with st.chat_message(message["role"]):
+        for tool_name in message.get("tool_calls", []):
+            with st.status(
+                f"🔧 Calling tool: {tool_name}",
+                expanded=False
+            ):
+                st.write(f"Tool: `{tool_name}`")
         st.text(message["content"])
 
 # Create the chat input box
@@ -180,22 +125,51 @@ if user_input:
 
     # AI response as streaming
     with st.chat_message("assistant"):
-        ai_message = st.write_stream(
-            message_chunk.content
-            for message_chunk, metadata in chatbot.stream(
-                {
-                    "messages": [
-                        HumanMessage(content=user_input)
-                    ]
-                },
-                config=CONFIG,
-                stream_mode="messages"
-            )
-            if isinstance(message_chunk, AIMessage) # Display only messages from AI, and ignore other message types
+        tool_container = st.container()
+        response_container = st.container()
+        ai_chunks = []
+        shown_tool_calls = set()
+        tool_calls = []
+
+        for message_chunk, metadata in chatbot.stream(
+            {
+                "messages": [
+                    HumanMessage(content=user_input)
+                ]
+            },
+            config=CONFIG,
+            stream_mode="messages"
+        ):
+            if isinstance(message_chunk, AIMessage): # Display only messages from AI, and ignore other message types
+                # Display the tool currently being called
+                for tool_call in getattr(message_chunk, "tool_call_chunks", []):
+                    tool_name = tool_call.get("name")
+                    if tool_name and tool_name not in shown_tool_calls:
+                        shown_tool_calls.add(tool_name)
+                        tool_calls.append(tool_name)
+
+                        with tool_container:
+                            with st.status(
+                                f"🔧 Calling tool: {tool_name}",
+                                expanded=False
+                            ):
+                                st.write(f"Tool: `{tool_name}`")
+
+                # Collect AI response chunks
+                if message_chunk.content:
+                    ai_chunks.append(message_chunk.content)
+
+        ai_message = "".join(
+            chunk if isinstance(chunk, str) else str(chunk)
+            for chunk in ai_chunks
         )
+
+        with response_container:
+            st.write(ai_message)
 
     # Save the complete assistant response in Streamlit session state
     st.session_state["message_history"].append({
         "role": "assistant",
-        "content": ai_message
+        "content": ai_message,
+        "tool_calls": tool_calls
     })
