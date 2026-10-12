@@ -1,7 +1,9 @@
+import os
+import tempfile
 from langchain_core.messages import HumanMessage, AIMessage
 import streamlit as st
 from backend import chatbot
-from helper import generate_thread_id, get_all_thread_ids, load_conversation
+from helper import generate_thread_id, get_all_thread_ids, ingest_rag_document
 
 def assign_thread(thread_id):
     if thread_id not in st.session_state["chat_threads"]:
@@ -46,6 +48,22 @@ if st.sidebar.button("New Chat"):
 
     # Rerun the Streamlit app to update the interface
     st.rerun()
+
+
+# Load a previous conversation from the LangGraph checkpointer
+def load_conversation(thread_id):
+    # Get the saved state for the selected thread
+    state = chatbot.get_state(
+        config={
+            "configurable": {
+                "thread_id": thread_id
+            }
+        }
+    )
+
+    # Return saved messages
+    # Return an empty list if no messages are available
+    return state.values.get("messages", [])
 
 # Display all conversation threads. Display the newest conversation first.
 for thread_id in st.session_state["chat_threads"]:
@@ -111,20 +129,71 @@ for message in st.session_state["message_history"]:
         if message["content"]:
             st.text(message["content"])
 
-# Create the chat input box
-user_input = st.chat_input("Type here")
+# ========================= Chat Input =========================
 
-# Run this block after the user submits a message
+user_input = st.chat_input(
+    "Attach a PDF, ask a question, then press Send",
+    accept_file="multiple",
+    file_type=["pdf"],
+)
+
+# With file uploads enabled, Streamlit returns a ChatInputValue object rather
+# than a plain string. Extract the text before it can be sent to LangChain.
+user_text = ""
+ingested_file_names = []
 if user_input:
+    user_text = user_input.text.strip()
+
+    # Process uploaded PDF files
+    if user_input.files:
+        for uploaded_file in user_input.files:
+            temp_path = None
+
+            try:
+                with tempfile.NamedTemporaryFile(
+                    delete=False,
+                    suffix=".pdf"
+                ) as temp_file:
+                    temp_file.write(uploaded_file.getvalue())
+                    temp_path = temp_file.name
+
+                with st.spinner(f"Processing {uploaded_file.name}..."):
+                    ingest_rag_document(temp_path)
+
+                ingested_file_names.append(uploaded_file.name)
+                st.success(f"{uploaded_file.name} ingested successfully!")
+
+            except Exception as e:
+                st.error(f"Failed to ingest {uploaded_file.name}: {e}")
+
+            finally:
+                if temp_path and os.path.exists(temp_path):
+                    os.remove(temp_path)
+
+# Run this block only when the submission contains a text message. A PDF-only
+# submission is ingested above, but must not be used as HumanMessage content.
+if user_text:
+    # The files are indexed before this message reaches the graph. Include that
+    # fact in the agent-only message so a question submitted with a PDF is
+    # answered from the newly uploaded document in the same chat turn.
+    agent_input = user_text
+    if ingested_file_names:
+        filenames = ", ".join(ingested_file_names)
+        agent_input = (
+            f"The user attached and uploaded these PDF(s) in this same message: "
+            f"{filenames}. Use rag_tool to answer from those PDF(s).\n\n"
+            f"User question: {user_text}"
+        )
+
     # Save the user's message in Streamlit session state
     st.session_state["message_history"].append({
         "role": "user",
-        "content": user_input
+        "content": user_text
     })
 
     # Display the user's message in the chat interface
     with st.chat_message("user"):
-        st.text(user_input)
+        st.text(user_text)
 
     # Set thread_id to CONFIG so Langgraph can fetch chat history in the DB Memory
     CONFIG = {
@@ -146,7 +215,7 @@ if user_input:
         for message_chunk, metadata in chatbot.stream(
             {
                 "messages": [
-                    HumanMessage(content=user_input)
+                    HumanMessage(content=agent_input)
                 ]
             },
             config=CONFIG,

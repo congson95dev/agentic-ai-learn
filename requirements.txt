@@ -32,3 +32,7 @@ requests>=2.31.0
 
 # Logging / debugging (better print format than the default print of python)
 rich>=13.7.0
+
+# RAG
+pypdf==6.13.2
+langchain-text-splitters==1.1.2

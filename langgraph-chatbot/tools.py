@@ -5,6 +5,7 @@ import math
 import requests
 import os 
 from typing import Any
+from helper import get_retriever
 
 load_dotenv(find_dotenv())
 
@@ -194,3 +195,35 @@ def get_current_weather(location: str) -> str:
 
     except (KeyError, TypeError, ValueError) as error:
         return f"Unexpected weather API response: {error}"
+
+@tool
+def rag_tool(query: str) -> str:
+    """
+    Retrieve relevant information from the PDF document.
+
+    Use this tool when the user asks factual or conceptual questions
+    that may be answered using the stored PDF documents.
+
+    Args:
+        query: The question or search query used to retrieve PDF content.
+    """
+    retriever = get_retriever()
+    documents = retriever.invoke(query)
+
+    if not documents:
+        return "No relevant information was found in the PDF."
+
+    formatted_documents = []
+
+    for index, document in enumerate(documents, start=1):
+        source = document.metadata.get("source", "Unknown source")
+        page = document.metadata.get("page", "Unknown page")
+
+        formatted_documents.append(
+            f"Document {index}\n"
+            f"Source: {source}\n"
+            f"Page: {page}\n"
+            f"Content: {document.page_content}"
+        )
+
+    return "\n\n".join(formatted_documents)

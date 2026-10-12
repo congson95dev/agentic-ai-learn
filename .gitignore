@@ -2,3 +2,4 @@
 venv/
 __pycache__/
 langgraph-chatbot/chatbot.db
+faiss_db/
