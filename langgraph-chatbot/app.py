@@ -5,7 +5,8 @@ from helper import generate_thread_id, get_all_thread_ids, load_conversation
 
 def assign_thread(thread_id):
     if thread_id not in st.session_state["chat_threads"]:
-        st.session_state["chat_threads"].append(thread_id)
+        # Keep the most recently created conversation at the top of the sidebar.
+        st.session_state["chat_threads"].insert(0, thread_id)
 
 # When create a new thread, we will:
 # 1. generate new thread id and add it to the thread list
@@ -46,8 +47,8 @@ if st.sidebar.button("New Chat"):
     # Rerun the Streamlit app to update the interface
     st.rerun()
 
-# Display all conversation threads in reverse order
-for thread_id in st.session_state["chat_threads"][::-1]:
+# Display all conversation threads. Display the newest conversation first.
+for thread_id in st.session_state["chat_threads"]:
     # Create one sidebar button for every thread
     if st.sidebar.button(
         str(thread_id),
@@ -75,9 +76,19 @@ for thread_id in st.session_state["chat_threads"][::-1]:
             else:
                 continue
 
+            # Pre-load tool call history
+            tool_calls = []
+            if isinstance(message, AIMessage):
+                tool_calls = [
+                    tool_call["name"]
+                    for tool_call in message.tool_calls
+                    if tool_call.get("name")
+                ]
+
             message_history.append({
                 "role": role,
-                "content": message.content
+                "content": message.content,
+                "tool_calls": tool_calls,
             })
 
         # Replace the current UI history with the selected conversation
@@ -97,7 +108,8 @@ for message in st.session_state["message_history"]:
                 expanded=False
             ):
                 st.write(f"Tool: `{tool_name}`")
-        st.text(message["content"])
+        if message["content"]:
+            st.text(message["content"])
 
 # Create the chat input box
 user_input = st.chat_input("Type here")
