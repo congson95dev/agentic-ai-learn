@@ -7,14 +7,14 @@ from langgraph.graph.message import add_messages
 from langchain_core.messages import BaseMessage
 from langgraph.prebuilt import ToolNode, tools_condition
 from helper import checkpoint
-from tools import search_tool, calculator, get_stock_price, get_current_weather, rag_tool
+from tools import search_tool, calculator, get_stock_price, get_current_weather, rag_tool, purchase_stock
 
 load_dotenv(find_dotenv())
 
 llm = ChatOpenAI(model="gpt-3.5-turbo")
 
 # Import tool to LLM
-tools = [search_tool,calculator, get_stock_price,get_current_weather, rag_tool]
+tools = [search_tool,calculator, get_stock_price,get_current_weather, rag_tool, purchase_stock]
 llm_with_tools = llm.bind_tools(tools)
 
 class ChatState(TypedDict):
@@ -34,6 +34,7 @@ def chat_node(state: ChatState):
             "expressions manually when the calculator is available.\n"
             "- Use `get_stock_price` when the user asks for the current price of a stock.\n"
             "- Use `get_current_weather` when the user asks about current weather for a location.\n\n"
+            "- Use `purchase_stock` when the user wants to purchase a stock.\n"
 
             "Answer general questions directly when no tool is required. "
             "Do not invent information from the uploaded document. "
