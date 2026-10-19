@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agentic Chatbot</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body>
+  <aside class="sidebar" id="sidebar">
+    <button class="new-chat" id="newChat">✎ <span>New chat</span></button>
+    <nav id="conversationList" aria-label="Conversations"></nav>
+    <p class="sidebar-foot">Agentic Chatbot</p>
+  </aside>
+  <main>
+    <header><button class="menu" id="menu" aria-label="Toggle menu">☰</button><span id="chatTitle">New chat</span></header>
+    <section class="chat" id="chat" aria-live="polite">
+      <div class="welcome" id="welcome"><h1>How can I help you today?</h1><p>Ask a question, attach a document, or speak your message.</p></div>
+    </section>
+    <form id="composer" enctype="multipart/form-data">
+      <div class="approval hidden" id="approval"><span id="approvalText"></span><button type="button" data-approved="true">Approve</button><button type="button" data-approved="false" class="secondary">Reject</button></div>
+      <div class="file-pills" id="filePills"></div>
+      <div class="composer-box">
+        <label class="attach" title="Attach files"><input id="files" type="file" multiple accept=".pdf,.docx,.txt,.md,.py,.csv">＋</label>
+        <textarea id="message" rows="1" placeholder="Message Agentic Chatbot" aria-label="Message"></textarea>
+        <button class="voice" id="voice" type="button" title="Speak your message" aria-label="Speak your message"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14.5a3.5 3.5 0 0 0 3.5-3.5V6a3.5 3.5 0 1 0-7 0v5a3.5 3.5 0 0 0 3.5 3.5Z"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M8.5 21h7"/></svg></button>
+        <button class="send" type="submit" aria-label="Send message">↑</button>
+      </div>
+      <p class="hint" id="voiceHint">Files are saved locally and indexed for this chat.</p>
+    </form>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>
