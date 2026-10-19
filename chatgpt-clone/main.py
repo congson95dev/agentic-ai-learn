@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 from pathlib import Path
 from uuid import uuid4
@@ -13,21 +14,31 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
 from sqlalchemy.orm import Session
 
-from agent import chatbot, pending_interrupt
+from agent import MCP_TOOL_NAMES, create_chatbot, pending_interrupt
 from database import ChatMessage, Conversation, get_db, init_database
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from rag import SUPPORTED_EXTENSIONS, read_file_text
 
 BASE_DIR = Path(__file__).resolve().parent
 UPLOADS_DIR = BASE_DIR / "uploads"
 app = FastAPI(title="Agentic Chatbot")
+logger = logging.getLogger(__name__)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
 
 @app.on_event("startup")
-def startup() -> None:
+async def startup() -> None:
     init_database()
     UPLOADS_DIR.mkdir(exist_ok=True)
+    checkpoint_context = AsyncSqliteSaver.from_conn_string(str(BASE_DIR / "databases" / "langgraph_checkpoints.sqlite3"))
+    app.state.checkpoint_context = checkpoint_context
+    app.state.chatbot = create_chatbot(await checkpoint_context.__aenter__())
+
+
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    await app.state.checkpoint_context.__aexit__(None, None, None)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -74,19 +85,20 @@ def delete_conversation(conversation_id: str, db: Session = Depends(get_db)):
     db.commit()
 
 
-def run_graph(payload, thread_id: str) -> tuple[str, list[str], str | None]:
+async def run_graph(payload, thread_id: str) -> tuple[str, list[dict[str, str]], str | None]:
+    chatbot = app.state.chatbot
     config = {"configurable": {"thread_id": thread_id}, "metadata": {"thread_id": thread_id}, "run_name": "fastapi_chat"}
     chunks: list[str] = []
-    calls: list[str] = []
-    for message, _metadata in chatbot.stream(payload, config=config, stream_mode="messages"):
+    calls: list[dict[str, str]] = []
+    async for message, _metadata in chatbot.astream(payload, config=config, stream_mode="messages"):
+        log_mcp_activity(message)
         if isinstance(message, AIMessage):
-            for call in getattr(message, "tool_call_chunks", []):
-                name = call.get("name")
-                if name and name not in calls:
-                    calls.append(name)
+            for name in tool_call_names(message):
+                if name and not any(item["name"] == name for item in calls):
+                    calls.append(tool_call_metadata(name))
             if message.content:
                 chunks.append(message.content if isinstance(message.content, str) else str(message.content))
-    unresolved = pending_interrupt(thread_id)
+    unresolved = await pending_interrupt(chatbot, thread_id)
     return "".join(chunks), calls, str(unresolved.value) if unresolved else None
 
 
@@ -95,15 +107,41 @@ def sse(event: str, payload: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def tool_call_metadata(name: str) -> dict[str, str]:
+    """Format a tool call for the browser and persisted conversation history."""
+    return {"name": name, "source": "MCP" if name in MCP_TOOL_NAMES else "Tool"}
+
+
+def tool_call_names(message: AIMessage) -> list[str]:
+    """Return tool names from both streamed chunks and completed AI messages."""
+    names: list[str] = []
+    for call in [*getattr(message, "tool_call_chunks", []), *getattr(message, "tool_calls", [])]:
+        name = call.get("name") if isinstance(call, dict) else getattr(call, "name", None)
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def log_mcp_activity(message) -> None:
+    """Write visible logs only for tools supplied by an MCP server."""
+    if isinstance(message, AIMessage):
+        for name in tool_call_names(message):
+            if name in MCP_TOOL_NAMES:
+                logger.info("MCP tool requested: %s", name)
+    elif isinstance(message, ToolMessage) and message.name in MCP_TOOL_NAMES:
+        logger.info("MCP tool completed: %s", message.name)
+
+
 @app.post("/api/conversations/{conversation_id}/messages")
-def send_message(
+async def send_message(
     conversation_id: str,
     message: str = Form(""),
     files: list[UploadFile] | None = File(None),
     db: Session = Depends(get_db),
 ):
     conversation = conversation_or_404(conversation_id, db)
-    if pending_interrupt(conversation_id):
+    chatbot = app.state.chatbot
+    if await pending_interrupt(chatbot, conversation_id):
         raise HTTPException(409, "A stock purchase is awaiting approval.")
     uploaded: list[str] = []
     for file in files or []:
@@ -134,33 +172,35 @@ def send_message(
     # Save the user's message before the response stays open for streaming.
     db.commit()
 
-    def generate_response():
+    async def generate_response():
         config = {"configurable": {"thread_id": conversation_id}, "metadata": {"thread_id": conversation_id}, "run_name": "fastapi_chat"}
         chunks: list[str] = []
-        tool_calls: list[str] = []
+        tool_calls: list[dict[str, str]] = []
         try:
-            for message_chunk, _metadata in chatbot.stream(
+            async for message_chunk, _metadata in chatbot.astream(
                 {"messages": [HumanMessage(content=agent_message)]}, config=config, stream_mode="messages"
             ):
+                log_mcp_activity(message_chunk)
                 if not isinstance(message_chunk, AIMessage):
                     continue
-                for tool_call in getattr(message_chunk, "tool_call_chunks", []):
-                    tool_name = tool_call.get("name")
-                    if tool_name and tool_name not in tool_calls:
-                        tool_calls.append(tool_name)
-                        yield sse("tool", {"name": tool_name})
+                for tool_name in tool_call_names(message_chunk):
+                    if tool_name and not any(item["name"] == tool_name for item in tool_calls):
+                        tool = tool_call_metadata(tool_name)
+                        tool_calls.append(tool)
+                        yield sse("tool", tool)
                 if message_chunk.content:
                     token = message_chunk.content if isinstance(message_chunk.content, str) else str(message_chunk.content)
                     chunks.append(token)
                     yield sse("token", {"text": token})
             answer = "".join(chunks)
-            unresolved = pending_interrupt(conversation_id)
+            unresolved = await pending_interrupt(chatbot, conversation_id)
             interrupt = str(unresolved.value) if unresolved else None
             db.add(ChatMessage(conversation_id=conversation_id, role="assistant", content=answer, tool_calls=json.dumps(tool_calls)))
             db.commit()
             yield sse("done", {"tool_calls": tool_calls, "uploaded": uploaded, "interrupt": interrupt, "title": conversation.title})
         except Exception as error:
             db.rollback()
+            logger.exception("Chat stream failed for conversation %s", conversation_id)
             yield sse("error", {"detail": str(error)})
 
     return StreamingResponse(
@@ -170,11 +210,12 @@ def send_message(
 
 
 @app.post("/api/conversations/{conversation_id}/approval")
-def approve_purchase(conversation_id: str, approved: bool = Form(...), db: Session = Depends(get_db)):
+async def approve_purchase(conversation_id: str, approved: bool = Form(...), db: Session = Depends(get_db)):
     conversation_or_404(conversation_id, db)
-    if not pending_interrupt(conversation_id):
+    chatbot = app.state.chatbot
+    if not await pending_interrupt(chatbot, conversation_id):
         raise HTTPException(409, "There is no action awaiting approval.")
-    answer, tool_calls, interrupt = run_graph(Command(resume="yes" if approved else "no"), conversation_id)
+    answer, tool_calls, interrupt = await run_graph(Command(resume="yes" if approved else "no"), conversation_id)
     db.add(ChatMessage(conversation_id=conversation_id, role="assistant", content=answer, tool_calls=json.dumps(tool_calls)))
     db.commit()
     return {"answer": answer, "tool_calls": tool_calls, "interrupt": interrupt}

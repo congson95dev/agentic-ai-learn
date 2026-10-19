@@ -19,6 +19,7 @@ sse_starlette
 
 langgraph==1.2.0
 langgraph-checkpoint-sqlite==3.1.0
+aiosqlite>=0.20.0
 
 streamlit
 fastapi>=0.115.0
@@ -29,6 +30,9 @@ sqlalchemy>=2.0.0
 docx2txt>=0.8
 
 langchain-tavily==0.2.18
+langchain-mcp-adapters==0.3.2
+mcp>=1.28.0,<2
+uv>=0.7.0
 
 # Web scraping
 beautifulsoup4>=4.12.0

@@ -6,14 +6,10 @@ from typing import Literal
 
 import requests
 from langchain_core.tools import tool
-from langchain_tavily import TavilySearch
 from langgraph.types import interrupt
 
 from database import LongTermMemory, SessionLocal
 from rag import retrieve
-
-search_tool = TavilySearch(max_results=5, topic="general", search_depth="advanced")
-
 
 @tool
 def purchase_stock(symbol: str, quantity: int) -> dict:

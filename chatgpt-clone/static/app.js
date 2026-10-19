@@ -5,8 +5,9 @@ const approval = document.querySelector('#approval'), approvalText = document.qu
 let conversationId = null, approvalInFlight = false;
 
 function escapeHtml(value) { const div = document.createElement('div'); div.textContent = value; return div.innerHTML; }
-function renderAssistant(item, content, toolCalls = [], isThinking = false) { const status = isThinking ? '<span class="tool-note thinking">Thinking<span class="dots">...</span></span>' : ''; item.innerHTML = status + toolCalls.map(name => `<span class="tool-note">Used ${escapeHtml(name)}</span>`).join('') + marked.parse(content || ''); chat.scrollTop = chat.scrollHeight; }
-function addMessage(role, content, toolCalls = [], isThinking = false) { welcome?.remove(); const item = document.createElement('article'); item.className = `message ${role}`; if (role === 'assistant') renderAssistant(item, content, toolCalls, isThinking); else item.textContent = content; chat.append(item); chat.scrollTop = chat.scrollHeight; return item; }
+function toolCallInfo(tool) { return typeof tool === 'string' ? {name: tool, source: 'Tool'} : tool; }
+function renderAssistant(item, content, toolCalls = [], isThinking = false) { const status = isThinking ? '<span class="tool-note thinking">Thinking<span class="dots">...</span></span>' : ''; const tools = toolCalls.map(toolCallInfo).map(tool => `<span class="tool-note" aria-label="Using ${escapeHtml(tool.source || 'Tool')}: ${escapeHtml(tool.name)}"><span class="tool-source ${tool.source === 'MCP' ? 'mcp' : ''}">Using ${escapeHtml(tool.source || 'Tool')}:</span> ${escapeHtml(tool.name)}</span>`).join(''); item.innerHTML = status + tools + marked.parse(content || ''); item.scrollIntoView({block: 'end'}); }
+function addMessage(role, content, toolCalls = [], isThinking = false) { document.querySelector('#welcome')?.remove(); const item = document.createElement('article'); item.className = `message ${role}`; if (role === 'assistant') renderAssistant(item, content, toolCalls, isThinking); else item.textContent = content; chat.append(item); item.scrollIntoView({block: 'end'}); return item; }
 function setFiles() { document.querySelector('#filePills').innerHTML = [...files.files].map(file => `<span class="file-pill">${escapeHtml(file.name)}</span>`).join(''); }
 function autoresize() { input.style.height = 'auto'; input.style.height = `${Math.min(input.scrollHeight, 180)}px`; }
 async function request(url, options = {}) { const response = await fetch(url, options); if (!response.ok) throw new Error((await response.json().catch(() => ({detail: 'Request failed'}))).detail); return response.status === 204 ? null : response.json(); }
@@ -34,7 +35,7 @@ composer.addEventListener('submit', async event => {
     if (!response.ok) throw new Error((await response.json().catch(() => ({detail: 'Request failed'}))).detail);
     await readSse(response, (type, payload) => {
       if (type === 'token') { answer += payload.text; renderAssistant(assistant, answer, toolCalls, isThinking); }
-      if (type === 'tool') { toolCalls.push(payload.name); renderAssistant(assistant, answer, toolCalls, isThinking); }
+      if (type === 'tool') { toolCalls.push(payload); renderAssistant(assistant, answer, toolCalls, isThinking); }
       if (type === 'done') { isThinking = false; renderAssistant(assistant, answer, toolCalls, isThinking); title.textContent = payload.title; refreshConversations(); if (payload.interrupt) { approvalText.textContent = payload.interrupt; approval.classList.remove('hidden'); } }
       if (type === 'error') throw new Error(payload.detail);
     });

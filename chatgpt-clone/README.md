@@ -4,7 +4,8 @@ Project này là một chatbot agentic sử dụng **FastAPI**, **Jinja2**, **La
 
 Chatbot có thể tự quyết định khi nào cần trả lời trực tiếp và khi nào cần gọi tool để:
 
-- tìm kiếm web;
+- tìm kiếm web qua Tavily Remote MCP;
+- tra cứu dữ liệu chuyến bay qua Aviationstack MCP;
 - tính toán;
 - xem giá cổ phiếu và thời tiết hiện tại;
 - hỏi đáp trên các tệp người dùng tải lên (RAG);
@@ -18,8 +19,8 @@ Giao diện cũng hỗ trợ tạo và quản lý nhiều cuộc hội thoại, 
 | Layer | File / thư mục chính | Trách nhiệm |
 | --- | --- | --- |
 | Presentation | `main.py`, `templates/index.html`, `static/` | Cung cấp giao diện chat, API FastAPI và stream phản hồi đến trình duyệt qua Server-Sent Events. |
-| Orchestration | `agent.py` | Định nghĩa LangGraph agent, điều phối model, tool và checkpoint cho từng cuộc hội thoại. |
-| Tools | `tools.py` | Định nghĩa các tool tìm web, tính toán, giá cổ phiếu, thời tiết, RAG, bộ nhớ và mô phỏng mua cổ phiếu. |
+| Orchestration | `agent.py`, `mcp_client.py` | Định nghĩa LangGraph agent, điều phối model, tool, kết nối MCP và checkpoint cho từng cuộc hội thoại. |
+| Tools | `tools.py` | Định nghĩa các tool cục bộ: tính toán, giá cổ phiếu, thời tiết, RAG, bộ nhớ và mô phỏng mua cổ phiếu. |
 | RAG | `rag.py`, `uploads/`, `vector_store/` | Đọc tệp tải lên, chia nhỏ nội dung, tạo embeddings và truy xuất bằng FAISS cục bộ. |
 | Data & memory | `database.py`, `databases/` | Lưu cuộc hội thoại, tin nhắn và bộ nhớ dài hạn trong SQLite; lưu checkpoint LangGraph trong một SQLite riêng. |
 
@@ -27,7 +28,8 @@ Giao diện cũng hỗ trợ tạo và quản lý nhiều cuộc hội thoại, 
 
 | Tool | Khi nào sử dụng | Nguồn / hoạt động |
 | --- | --- | --- |
-| `search_tool` | Thông tin hiện tại hoặc cần tìm trên web | Tavily Search; trả về tối đa 5 kết quả tìm kiếm chuyên sâu. |
+| Tavily MCP tools | Thông tin hiện tại hoặc cần tìm trên web | Tool được tự khám phá từ Tavily Remote MCP (`tavily_search`, `tavily_extract`, …). |
+| Aviationstack MCP tools | Chuyến bay, hãng bay, sân bay, tuyến bay hoặc loại máy bay | Tool được tự khám phá từ Aviationstack MCP, ví dụ `get_flight_status`, `flights_with_airline`, `list_airports` và `list_airlines`. |
 | `calculator` | Biểu thức toán học | Tính biểu thức với các hàm được giới hạn như `math.sqrt`, `round`, `min`, `max` và `sum`. |
 | `get_stock_price` | Giá cổ phiếu hiện tại, ví dụ `AAPL` hoặc `TSLA` | Gọi Alpha Vantage qua `ALPHAVANTAGE_API_KEY`. |
 | `get_current_weather` | Thời tiết hiện tại của một thành phố hoặc địa điểm | Dùng OpenWeather để tìm tọa độ, sau đó lấy dữ liệu thời tiết qua `OPENWEATHER_API_KEY`. |
@@ -54,11 +56,29 @@ Tạo tệp `.env` tại thư mục gốc của repository:
 ```env
 OPENAI_API_KEY=your_openai_api_key
 TAVILY_API_KEY=your_tavily_api_key
+AVIATIONSTACK_API_KEY=your_aviationstack_api_key
 ALPHAVANTAGE_API_KEY=your_alphavantage_api_key
 OPENWEATHER_API_KEY=your_openweather_api_key
 ```
 
 `OPENAI_API_KEY` là bắt buộc để chạy chat model và tạo embeddings cho RAG. Những key còn lại chỉ cần thiết khi sử dụng tool tương ứng.
+
+## MCP: Tavily và Aviationstack
+
+`mcp_client.py` tự khám phá tool khi ứng dụng khởi động và đưa chúng vào `agent.py` cùng các tool cục bộ. Nếu một MCP server không kết nối được, server còn lại và các tool cục bộ vẫn tiếp tục hoạt động; log khởi động sẽ chỉ rõ lỗi.
+
+- **Tavily** là Remote MCP dùng Streamable HTTP tại `https://mcp.tavily.com/mcp`. Ứng dụng gửi `TAVILY_API_KEY` qua header Bearer (không ghi key vào URL). Có thể thay endpoint bằng `TAVILY_MCP_URL` khi cần.
+- **Aviationstack** là stdio MCP được khởi chạy cục bộ bằng `uvx --python 3.13 aviationstack-mcp`. Ứng dụng chuyển `AVIATIONSTACK_API_KEY` thành `AVIATION_STACK_API_KEY`, đúng tên biến mà MCP server yêu cầu. `uv` đã có trong `requirements.txt`; ứng dụng cũng tìm `uvx` trong virtualenv hiện tại, không chỉ trong `PATH`. uv tự tải Python 3.13 khi cần. Nếu `uvx` nằm ở đường dẫn/lệnh khác, đặt `AVIATIONSTACK_MCP_COMMAND=/duong-dan/toi/uvx`.
+
+Sau khi đổi các API key hoặc endpoint, khởi động lại `uvicorn`. Tavily sẽ không còn dùng `langchain_tavily` trong chatbot này; mọi truy vấn web đi qua Remote MCP.
+
+Cài lại dependencies sau khi cập nhật để cài `uv`/`uvx` vào virtualenv:
+
+```bash
+pip install -r requirements.txt
+```
+
+Nếu muốn cài `uv` toàn hệ thống thay vì dùng virtualenv, chạy `pip install uv` hoặc xem [hướng dẫn cài đặt uv](https://docs.astral.sh/uv/getting-started/installation/).
 
 ## How to run
 
