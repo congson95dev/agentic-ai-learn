@@ -90,13 +90,13 @@ async def run_graph(payload, thread_id: str) -> tuple[str, list[dict[str, str]],
     config = {"configurable": {"thread_id": thread_id}, "metadata": {"thread_id": thread_id}, "run_name": "fastapi_chat"}
     chunks: list[str] = []
     calls: list[dict[str, str]] = []
-    async for message, _metadata in chatbot.astream(payload, config=config, stream_mode="messages"):
+    async for message, metadata in chatbot.astream(payload, config=config, stream_mode="messages"):
         log_mcp_activity(message)
         if isinstance(message, AIMessage):
             for name in tool_call_names(message):
                 if name and not any(item["name"] == name for item in calls):
                     calls.append(tool_call_metadata(name))
-            if message.content:
+            if is_final_response(metadata) and message.content:
                 chunks.append(message.content if isinstance(message.content, str) else str(message.content))
     unresolved = await pending_interrupt(chatbot, thread_id)
     return "".join(chunks), calls, str(unresolved.value) if unresolved else None
@@ -130,6 +130,11 @@ def log_mcp_activity(message) -> None:
                 logger.info("MCP tool requested: %s", name)
     elif isinstance(message, ToolMessage) and message.name in MCP_TOOL_NAMES:
         logger.info("MCP tool completed: %s", message.name)
+
+
+def is_final_response(metadata: dict) -> bool:
+    """Specialist prose is internal; only the final agent is streamed to the user."""
+    return metadata.get("langgraph_node") == "final_agent"
 
 
 @app.post("/api/conversations/{conversation_id}/messages")
@@ -177,7 +182,7 @@ async def send_message(
         chunks: list[str] = []
         tool_calls: list[dict[str, str]] = []
         try:
-            async for message_chunk, _metadata in chatbot.astream(
+            async for message_chunk, metadata in chatbot.astream(
                 {"messages": [HumanMessage(content=agent_message)]}, config=config, stream_mode="messages"
             ):
                 log_mcp_activity(message_chunk)
@@ -188,7 +193,7 @@ async def send_message(
                         tool = tool_call_metadata(tool_name)
                         tool_calls.append(tool)
                         yield sse("tool", tool)
-                if message_chunk.content:
+                if is_final_response(metadata) and message_chunk.content:
                     token = message_chunk.content if isinstance(message_chunk.content, str) else str(message_chunk.content)
                     chunks.append(token)
                     yield sse("token", {"text": token})

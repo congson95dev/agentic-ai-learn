@@ -1,6 +1,9 @@
 # Chatbot Agentic phong cách ChatGPT
 
-Project này là phiên bản giao diện web thay cho ứng dụng Streamlit trong `../langgraph-chatbot`. Ngoài ra, có sử dụng MCP.
+Project này là phiên bản giao diện web thay cho ứng dụng Streamlit trong `../langgraph-chatbot`. 
+Những thay đổi khác:
+chuyển từ single agent thành multi agent
+sử dụng MCP
 
 Techstack: **FastAPI**, **Jinja2**, **LangGraph**, **LangChain**, **MCP**
 
@@ -21,7 +24,7 @@ Giao diện cũng hỗ trợ tạo và quản lý nhiều cuộc hội thoại, 
 | Layer | File / thư mục chính | Trách nhiệm |
 | --- | --- | --- |
 | Presentation | `main.py`, `templates/index.html`, `static/` | Cung cấp giao diện chat, API FastAPI và stream phản hồi đến trình duyệt qua Server-Sent Events. |
-| Orchestration | `agent.py`, `mcp_client.py` | Định nghĩa LangGraph agent, điều phối model, tool, kết nối MCP và checkpoint cho từng cuộc hội thoại. |
+| Orchestration | `agent.py`, `mcp_client.py` | Định nghĩa đồ thị LangGraph đa agent, điều phối model, tool, kết nối MCP và checkpoint cho từng cuộc hội thoại. |
 | Tools | `tools.py`, `custom_mcp.py` | `tools.py` chứa các tool cục bộ; `custom_mcp.py` là local MCP server cho dữ liệu thời tiết. |
 | RAG | `rag.py`, `uploads/`, `vector_store/` | Đọc tệp tải lên, chia nhỏ nội dung, tạo embeddings và truy xuất bằng FAISS cục bộ. |
 | Data & memory | `database.py`, `databases/` | Lưu cuộc hội thoại, tin nhắn và bộ nhớ dài hạn trong SQLite; lưu checkpoint LangGraph trong một SQLite riêng. |
@@ -38,6 +41,12 @@ Giao diện cũng hỗ trợ tạo và quản lý nhiều cuộc hội thoại, 
 | `rag_tool` | Câu hỏi về tệp đã tải lên | Truy xuất 4 đoạn nội dung tương đồng nhất từ FAISS index cục bộ. |
 | `save_memory` | Người dùng yêu cầu chatbot ghi nhớ hoặc cần dùng thông tin đã nhớ | Lưu hoặc tìm tối đa 8 bộ nhớ phù hợp trong SQLite. |
 | `purchase_stock` | Yêu cầu mua cổ phiếu | Mô phỏng lệnh mua và tạm dừng graph để chờ phê duyệt. Chỉ `yes` mới hoàn tất lệnh mô phỏng; các lựa chọn khác sẽ hủy lệnh. |
+
+## Multi-agent
+
+`agent.py` dùng mô hình **router + specialist agents (small agents) + final agent**. Router chọn một hoặc nhiều specialist agents phù hợp; các specialist agents được chọn chạy song song nếu chúng không phụ thuộc vào nhau. Sau đó `final_agent` tổng hợp kết quả thành một câu trả lời duy nhất. Chỉ gọi những specialist agents được router chọn.
+
+Các specialist agents gồm web research, weather, aviation, data/calculator, RAG documents, memory, simulated stock transaction và general chat.
 
 ## Tệp được hỗ trợ cho RAG
 
