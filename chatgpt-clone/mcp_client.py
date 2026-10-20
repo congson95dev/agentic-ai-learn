@@ -39,44 +39,44 @@ def _uvx_command() -> str | None:
 
 def _connections() -> dict[str, dict]:
     """Build only the MCP connections whose required credentials are present."""
-    connections: dict[str, dict] = {}
-
     tavily_api_key = os.getenv("TAVILY_API_KEY")
-    if tavily_api_key:
-        connections["tavily"] = {
-            "transport": "streamable_http",
-            "url": os.getenv("TAVILY_MCP_URL", TAVILY_MCP_URL),
-            # Keep the secret out of the URL, which can otherwise leak into
-            # HTTP error messages or proxy access logs.
-            "headers": {"Authorization": f"Bearer {tavily_api_key}"},
-        }
-    else:
+    if not tavily_api_key:
         logger.warning("Tavily MCP is disabled: set TAVILY_API_KEY to enable it.")
 
     aviationstack_api_key = os.getenv("AVIATIONSTACK_API_KEY")
     uvx_command = _uvx_command()
-    if aviationstack_api_key and uvx_command:
-        connections["aviationstack"] = {
-            "transport": "stdio",
-            "command": uvx_command,
-            # aviationstack-mcp currently requires Python >= 3.13. uvx will
-            # download a managed interpreter if the host environment is older.
-            "args": ["--python", "3.13", "aviationstack-mcp"],
-            # Keep the child environment minimal while preserving the values
-            # uvx needs to be found and to locate its cache.
-            "env": {
-                "AVIATION_STACK_API_KEY": aviationstack_api_key,
-                "PATH": os.environ.get("PATH", ""),
-                "HOME": os.environ.get("HOME", ""),
-            },
-        }
-    elif aviationstack_api_key:
+    if aviationstack_api_key and not uvx_command:
         logger.warning(
             "Aviationstack MCP is disabled: uvx was not found. "
             "Run 'pip install -r requirements.txt' or set AVIATIONSTACK_MCP_COMMAND.",
         )
-    else:
+    elif not aviationstack_api_key:
         logger.warning("Aviationstack MCP is disabled: set AVIATIONSTACK_API_KEY to enable it.")
+
+    aviation_env = {
+        "AVIATION_STACK_API_KEY": aviationstack_api_key,
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": os.environ.get("HOME", ""),
+    }
+
+    connections = {
+        "tavily": {
+            "transport": "streamable_http",
+            "url": os.getenv("TAVILY_MCP_URL", TAVILY_MCP_URL),
+            "headers": {"Authorization": f"Bearer {tavily_api_key}"},
+        },
+        "aviationstack": {
+            "transport": "stdio",
+            "command": uvx_command,
+            "args": ["--python", "3.13", "aviationstack-mcp"],
+            "env": aviation_env,
+        },
+    }
+
+    if not tavily_api_key:
+        connections.pop("tavily")
+    if not aviationstack_api_key or not uvx_command:
+        connections.pop("aviationstack")
 
     return connections
 

@@ -1,6 +1,8 @@
 # Chatbot Agentic phong cách ChatGPT
 
-Project này là một chatbot agentic sử dụng **FastAPI**, **Jinja2**, **LangGraph** và **LangChain**. Đây là phiên bản giao diện web thay cho ứng dụng Streamlit trong `../langgraph-chatbot`.
+Project này là phiên bản giao diện web thay cho ứng dụng Streamlit trong `../langgraph-chatbot`. Ngoài ra, có sử dụng MCP.
+
+Techstack: **FastAPI**, **Jinja2**, **LangGraph**, **LangChain**, **MCP**
 
 Chatbot có thể tự quyết định khi nào cần trả lời trực tiếp và khi nào cần gọi tool để:
 
@@ -63,22 +65,19 @@ OPENWEATHER_API_KEY=your_openweather_api_key
 
 `OPENAI_API_KEY` là bắt buộc để chạy chat model và tạo embeddings cho RAG. Những key còn lại chỉ cần thiết khi sử dụng tool tương ứng.
 
-## MCP: Tavily và Aviationstack
+## MCP:
 
-`mcp_client.py` tự khám phá tool khi ứng dụng khởi động và đưa chúng vào `agent.py` cùng các tool cục bộ. Nếu một MCP server không kết nối được, server còn lại và các tool cục bộ vẫn tiếp tục hoạt động; log khởi động sẽ chỉ rõ lỗi.
+`mcp_client.py` là file MCP Client để kết nối tới các MCP Server.
 
-- **Tavily** là Remote MCP dùng Streamable HTTP tại `https://mcp.tavily.com/mcp`. Ứng dụng gửi `TAVILY_API_KEY` qua header Bearer (không ghi key vào URL). Có thể thay endpoint bằng `TAVILY_MCP_URL` khi cần.
-- **Aviationstack** là stdio MCP được khởi chạy cục bộ bằng `uvx --python 3.13 aviationstack-mcp`. Ứng dụng chuyển `AVIATIONSTACK_API_KEY` thành `AVIATION_STACK_API_KEY`, đúng tên biến mà MCP server yêu cầu. `uv` đã có trong `requirements.txt`; ứng dụng cũng tìm `uvx` trong virtualenv hiện tại, không chỉ trong `PATH`. uv tự tải Python 3.13 khi cần. Nếu `uvx` nằm ở đường dẫn/lệnh khác, đặt `AVIATIONSTACK_MCP_COMMAND=/duong-dan/toi/uvx`.
+- **Tavily** là Remote MCP dùng Streamable HTTP, dùng để internet search.
+- **Aviationstack** là Local MCP được khởi chạy cục bộ bằng `uvx --python 3.13 aviationstack-mcp`, dùng để lấy thông tin chuyến bay qua API của Aviationstack.
 
-Sau khi đổi các API key hoặc endpoint, khởi động lại `uvicorn`. Tavily sẽ không còn dùng `langchain_tavily` trong chatbot này; mọi truy vấn web đi qua Remote MCP.
 
-Cài lại dependencies sau khi cập nhật để cài `uv`/`uvx` vào virtualenv:
+# Setup:
 
 ```bash
 pip install -r requirements.txt
 ```
-
-Nếu muốn cài `uv` toàn hệ thống thay vì dùng virtualenv, chạy `pip install uv` hoặc xem [hướng dẫn cài đặt uv](https://docs.astral.sh/uv/getting-started/installation/).
 
 ## How to run
 
