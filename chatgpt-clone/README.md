@@ -9,7 +9,7 @@ Chatbot có thể tự quyết định khi nào cần trả lời trực tiếp 
 - tìm kiếm web qua Tavily Remote MCP;
 - tra cứu dữ liệu chuyến bay qua Aviationstack MCP;
 - tính toán;
-- xem giá cổ phiếu và thời tiết hiện tại;
+- xem giá cổ phiếu, thời tiết hiện tại và dự báo năm ngày;
 - hỏi đáp trên các tệp người dùng tải lên (RAG);
 - lưu và truy xuất bộ nhớ dài hạn;
 - yêu cầu người dùng phê duyệt trước khi mô phỏng mua cổ phiếu.
@@ -22,7 +22,7 @@ Giao diện cũng hỗ trợ tạo và quản lý nhiều cuộc hội thoại, 
 | --- | --- | --- |
 | Presentation | `main.py`, `templates/index.html`, `static/` | Cung cấp giao diện chat, API FastAPI và stream phản hồi đến trình duyệt qua Server-Sent Events. |
 | Orchestration | `agent.py`, `mcp_client.py` | Định nghĩa LangGraph agent, điều phối model, tool, kết nối MCP và checkpoint cho từng cuộc hội thoại. |
-| Tools | `tools.py` | Định nghĩa các tool cục bộ: tính toán, giá cổ phiếu, thời tiết, RAG, bộ nhớ và mô phỏng mua cổ phiếu. |
+| Tools | `tools.py`, `custom_mcp.py` | `tools.py` chứa các tool cục bộ; `custom_mcp.py` là local MCP server cho dữ liệu thời tiết. |
 | RAG | `rag.py`, `uploads/`, `vector_store/` | Đọc tệp tải lên, chia nhỏ nội dung, tạo embeddings và truy xuất bằng FAISS cục bộ. |
 | Data & memory | `database.py`, `databases/` | Lưu cuộc hội thoại, tin nhắn và bộ nhớ dài hạn trong SQLite; lưu checkpoint LangGraph trong một SQLite riêng. |
 
@@ -34,7 +34,7 @@ Giao diện cũng hỗ trợ tạo và quản lý nhiều cuộc hội thoại, 
 | Aviationstack MCP tools | Chuyến bay, hãng bay, sân bay, tuyến bay hoặc loại máy bay | Tool được tự khám phá từ Aviationstack MCP, ví dụ `get_flight_status`, `flights_with_airline`, `list_airports` và `list_airlines`. |
 | `calculator` | Biểu thức toán học | Tính biểu thức với các hàm được giới hạn như `math.sqrt`, `round`, `min`, `max` và `sum`. |
 | `get_stock_price` | Giá cổ phiếu hiện tại, ví dụ `AAPL` hoặc `TSLA` | Gọi Alpha Vantage qua `ALPHAVANTAGE_API_KEY`. |
-| `get_current_weather` | Thời tiết hiện tại của một thành phố hoặc địa điểm | Dùng OpenWeather để tìm tọa độ, sau đó lấy dữ liệu thời tiết qua `OPENWEATHER_API_KEY`. |
+| Local Weather MCP tools | Thời tiết hiện tại hoặc dự báo cho một thành phố/địa điểm | `get_current_weather` và `get_weather_forecast` được tự khám phá từ `custom_mcp.py`, chạy local qua stdio và dùng `OPENWEATHER_API_KEY`. Forecast của OpenWeather gồm các mốc ba giờ trong năm ngày. |
 | `rag_tool` | Câu hỏi về tệp đã tải lên | Truy xuất 4 đoạn nội dung tương đồng nhất từ FAISS index cục bộ. |
 | `save_memory` | Người dùng yêu cầu chatbot ghi nhớ hoặc cần dùng thông tin đã nhớ | Lưu hoặc tìm tối đa 8 bộ nhớ phù hợp trong SQLite. |
 | `purchase_stock` | Yêu cầu mua cổ phiếu | Mô phỏng lệnh mua và tạm dừng graph để chờ phê duyệt. Chỉ `yes` mới hoàn tất lệnh mô phỏng; các lựa chọn khác sẽ hủy lệnh. |
@@ -71,6 +71,7 @@ OPENWEATHER_API_KEY=your_openweather_api_key
 
 - **Tavily** là Remote MCP dùng Streamable HTTP, dùng để internet search.
 - **Aviationstack** là Local MCP được khởi chạy cục bộ bằng `uvx --python 3.13 aviationstack-mcp`, dùng để lấy thông tin chuyến bay qua API của Aviationstack.
+- **Local Weather** là custom Local MCP Server trong `custom_mcp.py`. Gồm có 2 tool sau bên trong: `get_current_weather` và `get_weather_forecast`.
 
 
 # Setup:

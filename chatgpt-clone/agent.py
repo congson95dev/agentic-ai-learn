@@ -12,13 +12,13 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 
 from mcp_client import load_mcp_tools
-from tools import calculator, get_current_weather, get_stock_price, purchase_stock, rag_tool, save_memory
+from tools import calculator, get_stock_price, purchase_stock, rag_tool, save_memory
 
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR.parent / ".env")
 
 
-LOCAL_TOOLS = [calculator, get_stock_price, get_current_weather, rag_tool, purchase_stock, save_memory]
+LOCAL_TOOLS = [calculator, get_stock_price, rag_tool, purchase_stock, save_memory]
 MCP_TOOLS = load_mcp_tools()
 TOOLS = [*LOCAL_TOOLS, *MCP_TOOLS]
 # Let LangGraph emit model tokens incrementally for the FastAPI streaming UI.
@@ -60,7 +60,7 @@ def _complete_tool_history(messages: list[BaseMessage]) -> list[BaseMessage]:
 async def chat_node(state: ChatState):
     instructions = SystemMessage(content="""You are a helpful Agentic Chatbot.
 Use rag_tool for questions about files uploaded by the user; never invent file content.
-Use the Tavily MCP tools for current or internet information and the Aviationstack MCP tools for live flight, airport, airline, route, and aircraft data. Use calculator for math, get_stock_price for live stock quotes, and get_current_weather for live weather.
+Use the local weather MCP tools for live current weather and five-day forecasts. Use the Tavily MCP tools for current or internet information and the Aviationstack MCP tools for live flight, airport, airline, route, and aircraft data. Use calculator for math and get_stock_price for live stock quotes.
 Use purchase_stock when asked to simulate buying a stock; it requires user approval.
 When the user explicitly asks you to remember a fact or preference, call save_memory with action='save'. When a saved preference/fact may help answer, call save_memory with action='retrieve' using relevant query words. Do not claim a memory was saved unless the tool says it was.
 Answer directly when no tool is needed. After a tool result, give a clear, natural final answer.""")

@@ -1,9 +1,4 @@
-"""MCP connections used by the chatbot agent.
-
-Tavily is a hosted Streamable HTTP MCP server. Aviationstack is a local stdio
-MCP server process managed by ``uvx``.  The latter receives its API key under
-the name expected by the Aviationstack MCP package.
-"""
+"""MCP connections used by the chatbot agent."""
 
 from __future__ import annotations
 
@@ -21,6 +16,7 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 logger = logging.getLogger(__name__)
 
 TAVILY_MCP_URL = "https://mcp.tavily.com/mcp"
+CUSTOM_MCP_PATH = Path(__file__).with_name("custom_mcp.py")
 
 
 def _uvx_command() -> str | None:
@@ -60,6 +56,11 @@ def _connections() -> dict[str, dict]:
     }
 
     connections = {
+        "local_weather": {
+            "transport": "stdio",
+            "command": sys.executable,
+            "args": [str(CUSTOM_MCP_PATH)],
+        },
         "tavily": {
             "transport": "streamable_http",
             "url": os.getenv("TAVILY_MCP_URL", TAVILY_MCP_URL),
@@ -100,7 +101,7 @@ async def _load_mcp_tools() -> list[BaseTool]:
 
 
 def load_mcp_tools() -> list[BaseTool]:
-    """Discover LangChain tools exposed by configured Tavily and Aviationstack MCP servers.
+    """Discover tools exposed by the local weather, Tavily, and Aviationstack MCP servers.
 
     This is deliberately synchronous because ``agent.py`` is imported during
     FastAPI startup. Tool discovery failure is non-fatal; the remaining local

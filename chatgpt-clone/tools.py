@@ -43,25 +43,40 @@ def get_stock_price(symbol: str) -> dict | str:
         return f"Could not retrieve a stock quote: {error}"
 
 
-@tool
-def get_current_weather(location: str) -> str:
-    """Get current weather for a city or location."""
-    key = os.getenv("OPENWEATHER_API_KEY")
-    if not key:
-        return "Weather API key is missing. Set OPENWEATHER_API_KEY."
-    try:
-        geo = requests.get("https://api.openweathermap.org/geo/1.0/direct", params={"q": location, "limit": 1, "appid": key}, timeout=15)
-        geo.raise_for_status()
-        places = geo.json()
-        if not places:
-            return f"Could not find the location: {location}"
-        place = places[0]
-        weather = requests.get("https://api.openweathermap.org/data/2.5/weather", params={"lat": place["lat"], "lon": place["lon"], "appid": key, "units": "metric"}, timeout=15)
-        weather.raise_for_status()
-        data = weather.json()
-        return f"Current weather in {place['name']}: {data['weather'][0]['description'].title()}, {data['main']['temp']}°C (feels like {data['main']['feels_like']}°C), humidity {data['main']['humidity']}%."
-    except (requests.RequestException, KeyError, IndexError) as error:
-        return f"Could not retrieve weather: {error}"
+# Weather is now exposed by the local MCP server in ``custom_mcp.py``. This
+# previous LangChain implementation is retained for learning/reference only;
+# leave it commented so it is not registered alongside the MCP tool.
+# @tool
+# def get_current_weather(location: str) -> str:
+#     """Get current weather for a city or location."""
+#     key = os.getenv("OPENWEATHER_API_KEY")
+#     if not key:
+#         return "Weather API key is missing. Set OPENWEATHER_API_KEY."
+#     try:
+#         geo = requests.get(
+#             "https://api.openweathermap.org/geo/1.0/direct",
+#             params={"q": location, "limit": 1, "appid": key},
+#             timeout=15,
+#         )
+#         geo.raise_for_status()
+#         places = geo.json()
+#         if not places:
+#             return f"Could not find the location: {location}"
+#         place = places[0]
+#         weather = requests.get(
+#             "https://api.openweathermap.org/data/2.5/weather",
+#             params={"lat": place["lat"], "lon": place["lon"], "appid": key, "units": "metric"},
+#             timeout=15,
+#         )
+#         weather.raise_for_status()
+#         data = weather.json()
+#         return (
+#             f"Current weather in {place['name']}: {data['weather'][0]['description'].title()}, "
+#             f"{data['main']['temp']}°C (feels like {data['main']['feels_like']}°C), "
+#             f"humidity {data['main']['humidity']}%."
+#         )
+#     except (requests.RequestException, KeyError, IndexError) as error:
+#         return f"Could not retrieve weather: {error}"
 
 
 @tool
