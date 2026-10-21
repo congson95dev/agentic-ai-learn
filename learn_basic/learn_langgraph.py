@@ -368,16 +368,126 @@ builder.add_edge("step_3", END)
 checkpointer = InMemorySaver()
 graph = builder.compile(checkpointer=checkpointer)
 
-# Execute the graph
-try:
-    print("▶️ Running graph: Please manually interrupt during Step 2...") # simulate the crash in step 2
-    graph.invoke({"input": "start"}, config={"configurable": {"thread_id": 'thread-1'}})
-except KeyboardInterrupt:
-    print("❌ Kernel manually interrupted (crash simulated).")
+# # Execute the graph
+# try:
+#     print("▶️ Running graph: Please manually interrupt during Step 2...") # simulate the crash in step 2
+#     graph.invoke({"input": "start"}, config={"configurable": {"thread_id": 'thread-1'}})
+# except KeyboardInterrupt:
+#     print("❌ Kernel manually interrupted (crash simulated).")
 
-# Re-run the graph
-print("\n🔁 Re-running the graph to demonstrate fault tolerance...")
-final_state = graph.invoke(None, config={"configurable": {"thread_id": 'thread-1'}})
-print("\n✅ Final State:", final_state)
+# # Re-run the graph
+# print("\n🔁 Re-running the graph to demonstrate fault tolerance...")
+# final_state = graph.invoke(None, config={"configurable": {"thread_id": 'thread-1'}})
+# print("\n✅ Final State:", final_state)
 
-print(list(graph.get_state_history({"configurable": {"thread_id": 'thread-1'}}))) # At this point, you should see it running from step 2 instead of start over from step 1
+# print(list(graph.get_state_history({"configurable": {"thread_id": 'thread-1'}}))) # At this point, you should see it running from step 2 instead of start over from step 1
+
+
+
+
+# ================================================================================================
+# Demo subgraph trong langgraph
+# Có 2 cách gọi subgraph trong langgraph
+# 1. Khai báo và gọi trực tiếp bên trong function bằng invoke()
+# VD: Graph translate to vietnamese dùng cách này.
+# 2. Khái báo graph thành 1 node, sau đó gọi vào node đó
+# VD: Graph translate to france dùng cách này.
+# ================================================================================================
+
+from rich import print
+
+from langchain_openai import ChatOpenAI
+from langgraph.graph import StateGraph, START, END
+from typing import TypedDict
+from dotenv import load_dotenv, find_dotenv
+
+_ = load_dotenv(find_dotenv())
+subgraph_llm = ChatOpenAI(model="gpt-3.5-turbo")
+parent_llm = ChatOpenAI(model="gpt-3.5-turbo")
+
+# Define Sub Graph 1 (translate text to Vietnamese)
+class SubState1(TypedDict):
+    question: str
+    translated_text_vn: str
+
+def translate_text_to_vn(state: SubState1):
+    prompt = f"""
+        Translate the following text to Vietnamese.
+        Keep it natural and clear. Do not add extra content.
+
+        Text:
+        {state["question"]}
+        """.strip()
+    
+    translated_text_vn = subgraph_llm.invoke(prompt).content
+
+    return {'translated_text_vn': translated_text_vn}
+
+subgraph1_builder = StateGraph(SubState1)
+
+subgraph1_builder.add_node('translate_text_to_vn', translate_text_to_vn)
+
+subgraph1_builder.add_edge(START, 'translate_text_to_vn')
+subgraph1_builder.add_edge('translate_text_to_vn', END)
+
+subgraph1 = subgraph1_builder.compile()
+
+# Define Sub Graph 2 (translate text to France)
+class SubState2(TypedDict):
+    answer_eng: str
+    answer_fr: str
+
+def translate_text_to_fr(state: SubState2):
+    prompt = f"""
+        Translate the following text to France.
+        Keep it natural and clear. Do not add extra content.
+
+        Text:
+        {state["answer_eng"]}
+        """.strip()
+    
+    answer_fr = subgraph_llm.invoke(prompt).content
+
+    return {'answer_fr': answer_fr}
+
+subgraph2_builder = StateGraph(SubState2)
+
+subgraph2_builder.add_node('translate_text_to_fr', translate_text_to_fr)
+
+subgraph2_builder.add_edge(START, 'translate_text_to_fr')
+subgraph2_builder.add_edge('translate_text_to_fr', END)
+
+subgraph2 = subgraph2_builder.compile()
+
+# Define Parent Graph (This graph will call to 2 Sub Graph above by 2 different way)
+class ParentState(TypedDict):
+    question: str
+    answer_eng: str
+    answer_vn: str
+    answer_fr: str
+
+def generate_answer(state: ParentState):
+    answer = parent_llm.invoke(f"You are a helpful assistant. Answer clearly.\n\nQuestion: {state['question']}").content
+
+    return {'answer_eng': answer}
+
+def translate_answer_to_vn(state: ParentState):
+    result = subgraph1.invoke({'question': state['answer_eng']}) # Call the Sub Graph 1 directly in function
+
+    return {'answer_vn': result['translated_text_vn']}
+
+parent_builder = StateGraph(ParentState)
+
+parent_builder.add_node("answer", generate_answer)
+parent_builder.add_node("translate_answer_to_vn", translate_answer_to_vn)
+parent_builder.add_node("translate_answer_to_fr", subgraph2) # Define the Sub Graph 2 as a node
+
+parent_builder.add_edge(START, 'answer')
+parent_builder.add_edge('answer', 'translate_answer_to_vn')
+parent_builder.add_edge('translate_answer_to_vn', 'translate_answer_to_fr') # Call the Sub Graph 2 as a node
+parent_builder.add_edge('translate_answer_to_fr', END)
+
+graph = parent_builder.compile()
+
+response = graph.invoke({'question': 'What is yugioh'})
+print(response)
