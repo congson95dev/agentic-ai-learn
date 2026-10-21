@@ -1,9 +1,10 @@
 # Chatbot Agentic phong cách ChatGPT
 
 Project này là phiên bản giao diện web thay cho ứng dụng Streamlit trong `../langgraph-chatbot`. 
+
 Những thay đổi khác:
-chuyển từ single agent thành multi agent
-sử dụng MCP
+- chuyển từ single agent thành multi agent
+- sử dụng MCP
 
 Techstack: **FastAPI**, **Jinja2**, **LangGraph**, **LangChain**, **MCP**
 
