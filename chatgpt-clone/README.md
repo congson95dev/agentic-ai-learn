@@ -50,7 +50,7 @@ Giao diện cũng hỗ trợ tạo và quản lý nhiều cuộc hội thoại, 
 
 Các specialist agents gồm web research, weather, aviation, data/calculator, RAG documents, memory, simulated stock transaction và general chat.
 
-### Evaluation
+## Evaluation
 
 Là dạng unit test của Agentic AI
 
@@ -69,7 +69,7 @@ python3 evaluation.py
 
 Lệnh trên in bảng PASS/FAIL theo năm nhóm trên. Từ đó, có thể dựa vào kết quả này để làm căn cứ dừng deployment tự động trong CICD, hoặc dùng để làm báo cáo.
 
-### Guardrail và bảo vệ dữ liệu đầu vào
+## Guardrail và bảo vệ dữ liệu đầu vào
 
 - Request chứa các keyword bị cấm (`hack`, `exploit`, `malware`, `jailbreak`, `bypass`) được dừng trước khi gọi LLM hoặc tool.
 - Mask PII data: Email được thay bằng `[REDACTED_EMAIL]`; credit card được mask; API key dạng `sk-...` được thay bằng `[REDACTED_API_KEY]`.
