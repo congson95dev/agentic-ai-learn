@@ -1,67 +1,123 @@
-# # ================================================================================================
-# # Tạo React Agent có tool search web và tool search dữ liệu thời tiết
-# # ================================================================================================
+# ================================================================================================
+# Tạo React Agent có tool search web và tool search dữ liệu thời tiết
+# ================================================================================================
 
-# import os
-# from dotenv import load_dotenv, find_dotenv
-# import requests
-# from langchain_openai import ChatOpenAI
-# from langchain_community.tools.tavily_search import TavilySearchResults
-# from langgraph.prebuilt import create_react_agent
-# from langchain_core.messages import HumanMessage
-# from langgraph.checkpoint.memory import MemorySaver
-# from langchain.tools import tool
-# from rich import print
+import os
+from dotenv import load_dotenv, find_dotenv
+import requests
+from langchain_openai import ChatOpenAI
+from langchain_tavily import TavilySearch
+from langchain.agents import create_agent
+from langchain.agents.middleware import PIIMiddleware, HumanInTheLoopMiddleware
+from langchain_core.messages import HumanMessage
+from langgraph.types import Command
+from langgraph.checkpoint.memory import MemorySaver
+from langchain.tools import tool
+from rich import print
 
-# _ = load_dotenv(find_dotenv())
-# WEATHERSTACK_API_KEY = os.getenv("WEATHERSTACK_API_KEY")
-# llm = ChatOpenAI(model="gpt-3.5-turbo")
+_ = load_dotenv(find_dotenv())
+WEATHERSTACK_API_KEY = os.getenv("WEATHERSTACK_API_KEY")
+llm = ChatOpenAI(model="gpt-3.5-turbo")
 
-# # Dùng Tavily để tạo search tool bằng langchain
-# # Tavily API Key Free lấy ở trang https://app.tavily.com/playground
-# search_tool = TavilySearchResults(max_results=3) # Search và trả về tối đa 3 kết quả
-# # response = search_tool.invoke("Who are the top stars of the 2024 Eurocup?")  # trong TH hỏi những câu hỏi vượt quá dữ liệu lưu trữ của OpenAI model, thì nó mới gọi tool search, còn nếu câu hỏi nằm trong knowledge base thì nó không search mà trả luôn kq.
-# # print(response)
+# Dùng Tavily để tạo search tool bằng langchain
+# Tavily API Key Free lấy ở trang https://app.tavily.com/playground
+search_tool = TavilySearch(max_results=3) # Search và trả về tối đa 3 kết quả
+# response = search_tool.invoke("Who are the top stars of the 2024 Eurocup?")  # trong TH hỏi những câu hỏi vượt quá dữ liệu lưu trữ của OpenAI model, thì nó mới gọi tool search, còn nếu câu hỏi nằm trong knowledge base thì nó không search mà trả luôn kq.
+# print(response)
 
-# @tool
-# def get_weather_data(city: str) -> str:
-#     """
-#     Fetch current weather information for a city.
-#     """
+@tool
+def get_weather_data(city: str) -> str:
+    """
+    Fetch current weather information for a city.
+    """
 
-#     url = (
-#         f"https://api.weatherstack.com/current?"
-#         f"access_key={WEATHERSTACK_API_KEY}&query={city}"
-#     )
+    url = (
+        f"https://api.weatherstack.com/current?"
+        f"access_key={WEATHERSTACK_API_KEY}&query={city}"
+    )
 
-#     response = requests.get(url)
+    response = requests.get(url)
 
-#     data = response.json()
+    data = response.json()
 
-#     if "current" not in data:
-#         return f"Could not fetch weather data for {city}"
+    if "current" not in data:
+        return f"Could not fetch weather data for {city}"
 
-#     return (
-#         f"City: {city}\n"
-#         f"Temperature: {data['current']['temperature']}°C\n"
-#         f"Weather: {data['current']['weather_descriptions'][0]}\n"
-#         f"Humidity: {data['current']['humidity']}%"
-#     )
+    return (
+        f"City: {city}\n"
+        f"Temperature: {data['current']['temperature']}°C\n"
+        f"Weather: {data['current']['weather_descriptions'][0]}\n"
+        f"Humidity: {data['current']['humidity']}%"
+    )
 
-# # Import tools to tool list
-# tools = [search_tool, get_weather_data]
+@tool
+def send_email(to: str, subject: str, body: str) -> str:
+    """Send an email to a recipient."""
+    print("Trigger send_email function")
+    return f"Email sent to {to} with subject: {subject}"
 
-# # Generate memory
-# memory = MemorySaver()
+# Import tools to tool list
+tools = [search_tool, get_weather_data, send_email]
 
-# # Tạo Agent có chứa tools và memory
-# agent_executor = create_react_agent(llm, tools, checkpointer=memory)
+# Generate memory
+memory = MemorySaver()
 
-# config = {"configurable": {"thread_id": "001"}} # thread_id để nhận biết đc cuộc trò truyện này thuộc thread nào
+# Tạo Agent có chứa tools và memory
+agent_executor = create_agent(
+    llm, tools, checkpointer=memory,
+    middleware=[
+        PIIMiddleware(
+            "email",
+            strategy="redact", # Redact emails in user input before sending to model, it will display the email as "[REDACTED_EMAIL]"
+            apply_to_input=True,
+        ),
+        PIIMiddleware(
+            "credit_card",
+            strategy="mask", # Mask credit cards in user input, it will display the credit card as "****-****-****-5100"
+            apply_to_input=True,
+        ),
+        PIIMiddleware(
+            "api_key",
+            detector=r"sk-[a-zA-Z0-9]{32}",
+            strategy="block", # Block API keys - raise error if detected
+            apply_to_input=True,
+        ),
+        HumanInTheLoopMiddleware(
+            interrupt_on={
+                "send_email": True, # Require approval if user want to send email
+            }
+        ),
+    ],
+)
 
+config = {"configurable": {"thread_id": "001"}} # thread_id để nhận biết đc cuộc trò truyện này thuộc thread nào
+
+# # Normal case, output the result from LLM
 # response = agent_executor.invoke({"messages": [HumanMessage(content="Find the capital of Vietnam and then find its current weather.")]}, config)
-# print(response)  # Output: {'output': 'The capital of Vietnam is Hanoi. The current weather in Hanoi is as follows:\n- Temperature: 38°C\n- Weather: Dust storm\n- Humidity: 20%'}
+# print(response["messages"][-1].content)  # Output: {'output': 'The capital of Vietnam is Hanoi. The current weather in Hanoi is as follows:\n- Temperature: 38°C\n- Weather: Dust storm\n- Humidity: 20%'}
 
+# # Demo PIIMiddleware, the input contain email and credit card information, when the LLM receive the input, it automatically mask the PII data.
+# response = agent_executor.invoke({"messages": [HumanMessage(content="My email is john.doe@example.com and my card is 5105-1051-0510-5100. Can you help me?")]}, config)
+# print(response["messages"][0].content) # Output: My email is [REDACTED_EMAIL] and my card is ****-****-****-5100. Can you help me?
+
+# # Demo PIIMiddleware, the input contain api key information, when the LLM receive the input, it return error immediately.
+# try:
+#     response = agent_executor.invoke({"messages": [HumanMessage(content="My key is sk-abcdefghijklmnopqrstuvwxyz123456. Can you help me?")]}, config)
+#     print(response["messages"][0].content)
+# except Exception as e:
+#     print(f"🚫 Blocked as expected: {e}") # Output: 🚫 Blocked as expected: Detected 1 instance(s) of api_key in text content
+
+# # Demo HumanInTheLoopMiddleware, the input contain request to send an email, when the LLM receive the input, it stop and ask for approval.
+# response = agent_executor.invoke({"messages": [HumanMessage(content="Send an email to team@company.com about the Q4 results")]}, config)
+# # print(response["messages"][0].content) # Output: Send an email to [REDACTED_EMAIL] about the Q4 results
+# print(response) # Check the output, you will see it waiting for approval
+
+# # Approved
+# response = agent_executor.invoke(
+#     Command(resume={"decisions": [{"type": "approve"}]}),
+#     config=config
+# )
+# print(response["messages"][-1].content) # Output: I have sent an email to the specified recipient regarding the Q4 results.
 
 
 
@@ -487,7 +543,7 @@ parent_builder.add_edge('answer', 'translate_answer_to_vn')
 parent_builder.add_edge('translate_answer_to_vn', 'translate_answer_to_fr') # Call the Sub Graph 2 as a node
 parent_builder.add_edge('translate_answer_to_fr', END)
 
-graph = parent_builder.compile()
+# graph = parent_builder.compile()
 
-response = graph.invoke({'question': 'What is yugioh'})
-print(response)
+# response = graph.invoke({'question': 'What is yugioh'})
+# print(response)
