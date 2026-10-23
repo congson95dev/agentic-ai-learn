@@ -1,14 +1,17 @@
 # ================================================================================================
 # Tạo React Agent có tool search web và tool search dữ liệu thời tiết
+# Ngoài ra, sử dụng thêm Built-in Middleware (PIIMiddleware, HumanInTheLoopMiddleware) của Langchain và Custom Middleware để validate input
 # ================================================================================================
 
 import os
 from dotenv import load_dotenv, find_dotenv
 import requests
+from typing import Any
 from langchain_openai import ChatOpenAI
 from langchain_tavily import TavilySearch
 from langchain.agents import create_agent
-from langchain.agents.middleware import PIIMiddleware, HumanInTheLoopMiddleware
+from langchain.agents.middleware import PIIMiddleware, HumanInTheLoopMiddleware, AgentMiddleware, AgentState, hook_config
+from langgraph.runtime import Runtime
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 from langgraph.checkpoint.memory import MemorySaver
@@ -62,6 +65,44 @@ tools = [search_tool, get_weather_data, send_email]
 # Generate memory
 memory = MemorySaver()
 
+# Custom Middleware
+class ContentFilterMiddleware(AgentMiddleware):
+    """
+    Deterministic guardrail: Block requests containing banned keywords.
+    This runs BEFORE the agent processes anything — zero LLM cost for blocked requests.
+    """
+
+    def __init__(self, banned_keywords: list[str]):
+        super().__init__()
+        self.banned_keywords = [kw.lower() for kw in banned_keywords]
+
+    # Use before_agent() to validate requests before any LLM processing begins.
+    @hook_config(can_jump_to=["end"])
+    def before_agent(self, state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
+        if not state["messages"]:
+            return None
+
+        first_message = state["messages"][0]
+        if first_message.type != "human":
+            return None
+
+        content = first_message.content.lower()
+
+        for keyword in self.banned_keywords:
+            if keyword in content:
+                print(f"🚫 Blocked — keyword detected: '{keyword}'")
+                return {
+                    "messages": [{
+                        "role": "assistant",
+                        "content": (
+                            "I cannot process requests containing inappropriate content. "
+                            "Please rephrase your request."
+                        )
+                    }],
+                    "jump_to": "end"
+                }
+        return None
+
 # Tạo Agent có chứa tools và memory
 agent_executor = create_agent(
     llm, tools, checkpointer=memory,
@@ -86,6 +127,9 @@ agent_executor = create_agent(
             interrupt_on={
                 "send_email": True, # Require approval if user want to send email
             }
+        ),
+        ContentFilterMiddleware(
+            banned_keywords=["hack", "exploit", "malware", "jailbreak", "bypass"] # Custom Middleware, block if found banned keywords
         ),
     ],
 )
@@ -118,6 +162,11 @@ config = {"configurable": {"thread_id": "001"}} # thread_id để nhận biết 
 #     config=config
 # )
 # print(response["messages"][-1].content) # Output: I have sent an email to the specified recipient regarding the Q4 results.
+
+# # Demo Custom Middleware, the input contain banned keywords, when the LLM receive the input, it return error immediately.
+response = agent_executor.invoke({"messages": [{"role": "user", "content": "How do I hack into a server?"}]}, config)
+print("🚫 Unsafe request response:")
+print(response["messages"][-1].content) # Output: I cannot process requests containing inappropriate content. Please rephrase your request.
 
 
 
