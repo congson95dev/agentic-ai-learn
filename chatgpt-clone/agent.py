@@ -251,6 +251,18 @@ def create_chatbot(checkpoint: AsyncSqliteSaver):
     return graph.compile(checkpointer=checkpoint)
 
 
+async def run_agent_evaluation():
+    """Run the offline regression suite without changing the live chat flow."""
+    from evaluation import run_evaluation
+
+    return await run_evaluation(
+        input_guardrail=input_guardrail_node,
+        router=router_node,
+        sanitize=sanitize_user_text,
+        build_chatbot=graph.compile,
+    )
+
+
 async def pending_interrupt(chatbot, thread_id: str):
     """Return the unresolved LangGraph interrupt for a conversation, if any."""
     snapshot = await chatbot.aget_state({"configurable": {"thread_id": thread_id}})

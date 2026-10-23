@@ -50,6 +50,25 @@ Giao diện cũng hỗ trợ tạo và quản lý nhiều cuộc hội thoại, 
 
 Các specialist agents gồm web research, weather, aviation, data/calculator, RAG documents, memory, simulated stock transaction và general chat.
 
+### Evaluation
+
+Là dạng unit test của Agentic AI
+
+Nó cover 5 tiêu chí:
+1. Answer Correctness => check xem trả lời đúng không
+2. Tool Selection => check xem có gọi đúng tool không
+3. Trajectory => check xem thứ tự gọi tool có đúng không
+4. Latency => check thời gian xử lý
+5. Safety / Reliability => check kết quả có loại bỏ secret information hoặc bị hallucinations hay không
+
+How to run:
+
+```bash
+python3 evaluation.py
+```
+
+Lệnh trên in bảng PASS/FAIL theo năm nhóm trên. Từ đó, có thể dựa vào kết quả này để làm căn cứ dừng deployment tự động trong CICD, hoặc dùng để làm báo cáo.
+
 ### Guardrail và bảo vệ dữ liệu đầu vào
 
 - Request chứa các keyword bị cấm (`hack`, `exploit`, `malware`, `jailbreak`, `bypass`) được dừng trước khi gọi LLM hoặc tool.
