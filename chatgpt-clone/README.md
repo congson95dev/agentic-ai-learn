@@ -3,8 +3,9 @@
 Project này là phiên bản giao diện web thay cho ứng dụng Streamlit trong `../langgraph-chatbot`. 
 
 Những thay đổi khác:
-- chuyển từ single agent thành multi agent
+- chuyển từ Single Agent thành Multi Agent
 - sử dụng MCP
+- sử dụng Custom Middleware / Guardrail để chặn các request có chứa banned keywords, và mask PII data.
 
 Techstack: **FastAPI**, **Jinja2**, **LangGraph**, **LangChain**, **MCP**
 
@@ -48,6 +49,11 @@ Giao diện cũng hỗ trợ tạo và quản lý nhiều cuộc hội thoại, 
 `agent.py` dùng mô hình **router + specialist agents (small agents) + final agent**. Router chọn một hoặc nhiều specialist agents phù hợp; các specialist agents được chọn chạy song song nếu chúng không phụ thuộc vào nhau. Sau đó `final_agent` tổng hợp kết quả thành một câu trả lời duy nhất. Chỉ gọi những specialist agents được router chọn.
 
 Các specialist agents gồm web research, weather, aviation, data/calculator, RAG documents, memory, simulated stock transaction và general chat.
+
+### Guardrail và bảo vệ dữ liệu đầu vào
+
+- Request chứa các keyword bị cấm (`hack`, `exploit`, `malware`, `jailbreak`, `bypass`) được dừng trước khi gọi LLM hoặc tool.
+- Mask PII data: Email được thay bằng `[REDACTED_EMAIL]`; credit card được mask; API key dạng `sk-...` được thay bằng `[REDACTED_API_KEY]`.
 
 ## Tệp được hỗ trợ cho RAG
 
@@ -111,6 +117,8 @@ Sau đó mở [http://127.0.0.1:8000](http://127.0.0.1:8000) trên trình duyệ
 | `databases/langgraph_checkpoints.sqlite3` | Checkpoint LangGraph theo từng cuộc hội thoại; cần thiết để tiếp tục luồng agent và quy trình phê duyệt. |
 
 Khi người dùng yêu cầu chatbot ghi nhớ một thông tin hoặc sở thích, agent sẽ gọi `save_memory(action="save")`. Khi một thông tin đã lưu có thể giúp trả lời câu hỏi, agent gọi `save_memory(action="retrieve")` để tìm lại thông tin phù hợp.
+
+Tin nhắn mới được che email, credit card và API key trước khi ghi vào hai nơi lưu trữ trên.
 
 ## Nhập bằng giọng nói
 

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Annotated, Literal, TypedDict
 
 from dotenv import load_dotenv
-from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
@@ -51,6 +52,7 @@ class RouteDecision(BaseModel):
 class ChatState(TypedDict, total=False):
     messages: Annotated[list[BaseMessage], add_messages]
     agents: list[AgentName]
+    guardrail_message: str
 
 
 MODEL_NAME = "gpt-3.5-turbo"
@@ -58,6 +60,60 @@ router_llm = ChatOpenAI(model=MODEL_NAME, temperature=0).with_structured_output(
     RouteDecision, method="function_calling"
 )
 final_llm = ChatOpenAI(model=MODEL_NAME, streaming=True)
+
+# This graph is assembled manually with StateGraph, rather than with
+# langchain.agents.create_agent(), so AgentMiddleware cannot be attached to it
+# directly.  The following pre-router node is the StateGraph equivalent of the
+# ContentFilterMiddleware and PIIMiddleware examples in learn_langgraph.py.
+BANNED_KEYWORDS = frozenset({"hack", "exploit", "malware", "jailbreak", "bypass"})
+EMAIL_PATTERN = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
+CREDIT_CARD_PATTERN = re.compile(r"(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)")
+API_KEY_PATTERN = re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b")
+
+
+def _latest_user_text(messages: list[BaseMessage]) -> str:
+    """Return the newest plain-text user message in a persisted thread."""
+    for message in reversed(messages):
+        if isinstance(message, HumanMessage) and isinstance(message.content, str):
+            return message.content
+    return ""
+
+
+def sanitize_user_text(text: str) -> str:
+    """Redact sensitive user data before storage or any LLM call."""
+    text = EMAIL_PATTERN.sub("[REDACTED_EMAIL]", text)
+    text = CREDIT_CARD_PATTERN.sub("****-****-****-####", text)
+    return API_KEY_PATTERN.sub("[REDACTED_API_KEY]", text)
+
+
+def _model_history(messages: list[BaseMessage]) -> list[BaseMessage]:
+    """Return history suitable for an LLM without altering stored chat history."""
+    safe_history: list[BaseMessage] = []
+    for message in _complete_tool_history(messages):
+        if isinstance(message, HumanMessage) and isinstance(message.content, str):
+            safe_history.append(message.model_copy(update={"content": sanitize_user_text(message.content)}))
+        else:
+            safe_history.append(message)
+    return safe_history
+
+
+async def input_guardrail_node(state: ChatState) -> dict:
+    """Deterministic, zero-LLM-cost filter that runs before routing or tools."""
+    user_text = _latest_user_text(state.get("messages", []))
+    normalized = user_text.lower()
+    if any(keyword in normalized for keyword in BANNED_KEYWORDS):
+        return {
+            "guardrail_message": (
+                "I can't process requests containing that type of potentially harmful content. "
+                "Please rephrase your request."
+            )
+        }
+    return {"guardrail_message": ""}
+
+
+def route_after_input_guardrail(state: ChatState) -> Literal["router", "final_agent"]:
+    """Blocked requests bypass every specialist and every LLM call."""
+    return "final_agent" if state.get("guardrail_message") else "router"
 
 
 def _complete_tool_history(messages: list[BaseMessage]) -> list[BaseMessage]:
@@ -98,7 +154,7 @@ independent specialists needed to answer the latest user request:
 Choose more than one when the request genuinely needs multiple independent
 sources, for example weather and aviation. Do not select research merely
 because a question is general. Return only the routing decision."""),
-        *_complete_tool_history(state["messages"]),
+        *_model_history(state["messages"]),
     ])
     return {"agents": list(dict.fromkeys(decision.agents))}
 
@@ -129,7 +185,7 @@ def make_specialist(name: AgentName, tools: list[BaseTool], instruction: str):
 Use a relevant tool whenever one is needed. A separate final-answer agent will
 use your findings, so keep any non-tool text as a short internal note and do
 not address the user directly."""),
-            *_complete_tool_history(state["messages"]),
+            *_model_history(state["messages"]),
         ])
         tool_messages: list[ToolMessage] = []
         for call in response.tool_calls:
@@ -149,6 +205,8 @@ not address the user directly."""),
 
 async def final_agent_node(state: ChatState) -> dict:
     """Create the sole user-facing answer from all specialist findings."""
+    if guardrail_message := state.get("guardrail_message"):
+        return {"messages": [AIMessage(content=guardrail_message)]}
     response = await final_llm.ainvoke([
         SystemMessage(content="""You are the final response agent for a multi-agent chatbot.
 Answer the user's latest request directly and accurately using specialist tool
@@ -156,12 +214,13 @@ results in the conversation. Do not mention routing, agents, internal notes,
 or raw tool payloads. If a selected tool failed or is unavailable, state the
 relevant limitation and still answer with available information. Never claim a
 stock purchase succeeded unless its tool result says so."""),
-        *_complete_tool_history(state["messages"]),
+        *_model_history(state["messages"]),
     ])
     return {"messages": [response]}
 
 
 graph = StateGraph(ChatState)
+graph.add_node("input_guardrail", input_guardrail_node)
 graph.add_node("router", router_node)
 graph.add_node("research_agent", make_specialist("research", RESEARCH_TOOLS, "Find current web information with research tools."))
 graph.add_node("weather_agent", make_specialist("weather", WEATHER_TOOLS, "Retrieve requested current weather or a forecast."))
@@ -173,7 +232,8 @@ graph.add_node("transaction_agent", make_specialist("transaction", [purchase_sto
 graph.add_node("general_agent", make_specialist("general", [], "Provide a concise internal draft for a general request."))
 graph.add_node("final_agent", final_agent_node)
 
-graph.add_edge(START, "router")
+graph.add_edge(START, "input_guardrail")
+graph.add_conditional_edges("input_guardrail", route_after_input_guardrail)
 SPECIALIST_NODES = [
     "research_agent", "weather_agent", "aviation_agent", "data_agent",
     "documents_agent", "memory_agent", "transaction_agent", "general_agent",

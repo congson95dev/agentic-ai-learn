@@ -164,9 +164,9 @@ config = {"configurable": {"thread_id": "001"}} # thread_id để nhận biết 
 # print(response["messages"][-1].content) # Output: I have sent an email to the specified recipient regarding the Q4 results.
 
 # # Demo Custom Middleware, the input contain banned keywords, when the LLM receive the input, it return error immediately.
-response = agent_executor.invoke({"messages": [{"role": "user", "content": "How do I hack into a server?"}]}, config)
-print("🚫 Unsafe request response:")
-print(response["messages"][-1].content) # Output: I cannot process requests containing inappropriate content. Please rephrase your request.
+# response = agent_executor.invoke({"messages": [{"role": "user", "content": "How do I hack into a server?"}]}, config)
+# print("🚫 Unsafe request response:")
+# print(response["messages"][-1].content) # Output: I cannot process requests containing inappropriate content. Please rephrase your request.
 
 
 

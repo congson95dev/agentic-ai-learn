@@ -14,7 +14,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
 from sqlalchemy.orm import Session
 
-from agent import MCP_TOOL_NAMES, create_chatbot, pending_interrupt
+from agent import MCP_TOOL_NAMES, create_chatbot, pending_interrupt, sanitize_user_text
 from database import ChatMessage, Conversation, get_db, init_database
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from rag import SUPPORTED_EXTENSIONS, read_file_text
@@ -168,12 +168,13 @@ async def send_message(
     clean_message = message.strip()
     if not clean_message and not uploaded:
         raise HTTPException(400, "Enter a message or attach a file.")
-    agent_message = clean_message or "Please confirm the uploaded file is ready for questions."
+    stored_message = sanitize_user_text(clean_message)
+    agent_message = stored_message or "Please confirm the uploaded file is ready for questions."
     if uploaded:
         agent_message = f"The user uploaded these files in this message: {', '.join(uploaded)}. Use rag_tool if they ask about them.\n\nUser message: {agent_message}"
-    db.add(ChatMessage(conversation_id=conversation_id, role="user", content=clean_message or f"Uploaded: {', '.join(uploaded)}"))
+    db.add(ChatMessage(conversation_id=conversation_id, role="user", content=stored_message or f"Uploaded: {', '.join(uploaded)}"))
     if conversation.title == "New chat" and clean_message:
-        conversation.title = clean_message[:60]
+        conversation.title = stored_message[:60]
     # Save the user's message before the response stays open for streaming.
     db.commit()
 
