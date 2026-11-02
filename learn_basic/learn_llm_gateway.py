@@ -1,4 +1,5 @@
 
+import re
 import warnings
 import logging
 import time
@@ -78,6 +79,41 @@ model_list = [
 # Apply Load Balancing, type="least-busy".
 # There is another type called "simple-shuffle", we can also use that.
 router = Router(model_list=model_list, routing_strategy="least-busy")
+
+# PII Pattern definitions
+PII_PATTERNS = {
+    "EMAIL":       r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}",
+    "PHONE_VN":    r"(\+84[\-\s]?)?[6-9]\d{9}",                  # Vietnamese mobile
+    "PHONE_US":    r"(\+1[\-\s]?)?\(?\d{3}\)?[\-\s]?\d{3}[\-\s]?\d{4}",
+    "SSN":         r"\b\d{3}-\d{2}-\d{4}\b",
+    "CREDIT_CARD": r"\b\d{4}[\s\-]?\d{4}[\s\-]?\d{4}[\s\-]?\d{4}\b",
+    "IP_ADDRESS":  r"\b(?:\d{1,3}\.){3}\d{1,3}\b",
+}
+
+def redact_pii(text: str):
+    """Replace PII in text with placeholders. Returns (clean_text, detected_list)."""
+    detected = []
+    clean = text
+    for label, pattern in PII_PATTERNS.items():
+        matches = re.findall(pattern, clean)
+        if matches:
+            detected.append({"type": label, "count": len(matches)})
+            clean = re.sub(pattern, f"<{label}_REDACTED>", clean)
+    return clean, detected
+
+def pii_input_guardrail(kwargs):
+    """LiteLLM pre-call hook: scrub PII from user messages."""
+    messages = kwargs.get("messages", [])
+    for msg in messages:
+        if msg.get("role") == "user":
+            clean, detected = redact_pii(msg["content"])
+            if detected:
+                print(f"🚨 PII REDACTED: {detected}")
+                msg["content"] = clean
+
+
+# Register the guardrail into litellm
+litellm.input_callback = [pii_input_guardrail]
 
 # Classify the task type of the user query: code, summary, or general.
 def classify_task(user_query: str) -> str:
@@ -166,9 +202,10 @@ queries = [
     "Write a Python function to compute Fibonacci numbers.",
     "Write a Python function to compute Fibonacci numbers.", # This is a duplicate query to test caching.
     "Summarize the importance of attention mechanism in 2 sentences.",
-    "Tell me a fun fact about elephants."
+    "Tell me a fun fact about elephants.",
+    "Hi, I'm Thomas. My email is thomas@gmail.com, my mobile is +84-9876543210. Help me write Python code about minus calculation." # This query contains PII to test the guardrail.
 ]
-for query in queries:
+for index, query in enumerate(queries):
     print("=" * 70)
     print("❓ Q:", query)
     result = smart_chat(query)
