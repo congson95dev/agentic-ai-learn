@@ -105,16 +105,6 @@ def redact_pii(text: str):
             clean = re.sub(pattern, f"<{label}_REDACTED>", clean)
     return clean, detected
 
-def pii_input_guardrail(kwargs):
-    """LiteLLM pre-call hook: scrub PII from user messages."""
-    messages = kwargs.get("messages", [])
-    for msg in messages:
-        if msg.get("role") == "user":
-            clean, detected = redact_pii(msg["content"])
-            if detected:
-                print(f"🚨 PII REDACTED: {detected}")
-                msg["content"] = clean
-
 INJECTION_PATTERNS = [
     r"ignore (all |the )?(previous|prior|above) (instructions?|prompts?|rules?)",
     r"disregard (the |all )?(previous|prior|earlier)",
@@ -140,7 +130,7 @@ class GuardrailViolation(Exception):
     """Raised when a guardrail blocks a request."""
 
 def injection_guardrail(kwargs):
-    """LiteLLM pre-call hook: block common prompt-injection attempts."""
+    """Block common prompt-injection attempts."""
     for msg in kwargs.get("messages", []):
         if msg.get("role") != "user":
             continue
@@ -155,7 +145,7 @@ def injection_guardrail(kwargs):
                 raise GuardrailViolation("Blocked: prompt injection attempt")
 
 def topic_guardrail(kwargs):
-    """LiteLLM pre-call hook: block requests about forbidden topics."""
+    """Block requests about forbidden topics."""
     for msg in kwargs.get("messages", []):
         if msg.get("role") != "user":
             continue
@@ -172,12 +162,16 @@ def topic_guardrail(kwargs):
                     f"This assistant doesn't discuss topics related to '{keyword}'."
                 )
 
-# Register the guardrails with LiteLLM. They will be called before every model call.
-litellm.input_callback = [
-    injection_guardrail,
-    topic_guardrail,
-    pii_input_guardrail,
-]
+def validate_and_sanitize(user_query: str) -> str:
+    """Block unsafe input once, then return a PII-redacted query for all LLM calls."""
+    messages = [{"role": "user", "content": user_query}]
+    injection_guardrail({"messages": messages})
+    topic_guardrail({"messages": messages})
+
+    clean_query, detected = redact_pii(user_query)
+    if detected:
+        print(f"🚨 PII REDACTED: {detected}")
+    return clean_query
 
 # Classify the task type of the user query: code, summary, or general.
 def classify_task(user_query: str) -> str:
@@ -222,8 +216,13 @@ def smart_chat(user_query: str):
     """Routes to the right model based on task type, with fallbacks."""
     start = time.time()
 
+    # Step 0: Validate and sanitize the user query
+    # This step is additional step to ensure that the user query is safe and does not contain any PII or forbidden topics.
+    # We have already register the guardrails in the router, but we want to do this step first to avoid ANY unnecessary calls to the LLMs.
+    clean_query = validate_and_sanitize(user_query)
+
     # Step 1: Classify the task
-    task = classify_task(user_query)
+    task = classify_task(clean_query)
     print(f"   Detected task: {task!r}")
 
     # Step 2: Route to the right model(s)
@@ -237,7 +236,7 @@ def smart_chat(user_query: str):
     # Step 3: Call the model(s) with fallbacks
     response = call_with_fallbacks(
         model_chain=model_chain,
-        messages=[{"role": "user", "content": user_query}]
+        messages=[{"role": "user", "content": clean_query}]
     )
     latency = time.time() - start
 
@@ -279,7 +278,11 @@ queries = [
 for index, query in enumerate(queries):
     print("=" * 70)
     print("❓ Q:", query)
-    result = smart_chat(query)
+    try:
+        result = smart_chat(query)
+    except GuardrailViolation as error:
+        print(f"❌ Blocked: {error}")
+        continue
     print(f"🏷️  Task:    {result['detected_task']}")
     print(f"🤖 Model:    {result['model_used']}")
     print(f"🗃️  Cache hit: {result['cache_hit']}")
