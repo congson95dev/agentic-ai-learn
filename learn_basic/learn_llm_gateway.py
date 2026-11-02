@@ -2,8 +2,9 @@
 import warnings
 import logging
 import time
+import os
 import litellm
-from litellm import completion, completion_cost
+from litellm import Router, completion, completion_cost
 from litellm.caching import Cache
 from dotenv import load_dotenv
 load_dotenv()
@@ -14,6 +15,69 @@ litellm.suppress_debug_info = True
 
 # Enable in-memory caching (you can also use Redis in production)
 litellm.cache = Cache(type="local")
+
+model_list = [
+    {
+        "model_name": "code-pool",
+        "litellm_params": {
+            "model": "gpt-4o",
+            "api_key": os.getenv("OPENAI_API_KEY"),
+        },
+        "model_info": {"id": "code-openai-gpt-4o"},
+    },
+    {
+        "model_name": "code-pool",
+        "litellm_params": {
+            "model": "gpt-4o-mini",
+            "api_key": os.getenv("OPENAI_API_KEY"),
+        },
+        "model_info": {"id": "code-openai-gpt-4o-mini"},
+    },
+    {
+        "model_name": "code-pool",
+        "litellm_params": {
+            "model": "groq/openai/gpt-oss-20b",
+            "api_key": os.getenv("GROQ_API_KEY"),
+        },
+        "model_info": {"id": "code-groq-gpt-oss-20b"},
+    },
+    {
+        "model_name": "summary-pool",
+        "litellm_params": {
+            "model": "gpt-4o-mini",
+            "api_key": os.getenv("OPENAI_API_KEY"),
+        },
+        "model_info": {"id": "summary-openai-gpt-4o-mini"},
+    },
+    {
+        "model_name": "summary-pool",
+        "litellm_params": {
+            "model": "groq/openai/gpt-oss-20b",
+            "api_key": os.getenv("GROQ_API_KEY"),
+        },
+        "model_info": {"id": "summary-groq-gpt-oss-20b"},
+    },
+    {
+        "model_name": "general-pool",
+        "litellm_params": {
+            "model": "groq/openai/gpt-oss-20b",
+            "api_key": os.getenv("GROQ_API_KEY"),
+        },
+        "model_info": {"id": "general-groq-gpt-oss-20b"},
+    },
+    {
+        "model_name": "general-pool",
+        "litellm_params": {
+            "model": "gpt-4o-mini",
+            "api_key": os.getenv("OPENAI_API_KEY"),
+        },
+        "model_info": {"id": "general-openai-gpt-4o-mini"},
+    },
+]
+
+# Apply Load Balancing, type="least-busy".
+# There is another type called "simple-shuffle", we can also use that.
+router = Router(model_list=model_list, routing_strategy="least-busy")
 
 # Classify the task type of the user query: code, summary, or general.
 def classify_task(user_query: str) -> str:
@@ -39,11 +103,11 @@ def classify_task(user_query: str) -> str:
 
 # If a model fails, try the next one in the chain. If all fail, raise the last error.
 def call_with_fallbacks(model_chain, messages):
-    """Try each model in order; return the first one that succeeds."""
+    """Try each least-busy model pool in order; return the first success."""
     last_error = None
     for model in model_chain:
         try:
-            return completion(model=model, messages=messages)
+            return router.completion(model=model, messages=messages)
         except Exception as e:
             print(f"   ⚠️  {model} failed ({type(e).__name__}), trying next...")
             last_error = e
@@ -61,9 +125,9 @@ def smart_chat(user_query: str):
 
     # Step 2: Route to the right model(s)
     routing = {
-        "code":    ["gpt-4o", "gpt-4o-mini", "groq/openai/gpt-oss-20b"],
-        "summary": ["gpt-4o-mini", "groq/openai/gpt-oss-20b"],
-        "general": ["groq/openai/gpt-oss-20b", "gpt-4o-mini"],
+        "code":    ["code-pool"],
+        "summary": ["summary-pool"],
+        "general": ["general-pool"],
     }
     model_chain = routing.get(task, routing["general"])
 
