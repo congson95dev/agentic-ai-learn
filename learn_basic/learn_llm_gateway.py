@@ -78,7 +78,11 @@ model_list = [
 
 # Apply Load Balancing, type="least-busy".
 # There is another type called "simple-shuffle", we can also use that.
-router = Router(model_list=model_list, routing_strategy="least-busy")
+router = Router(
+    model_list=model_list,
+    routing_strategy="least-busy",
+    cache_responses=True,
+)
 
 # PII Pattern definitions
 PII_PATTERNS = {
@@ -127,6 +131,7 @@ def classify_task(user_query: str) -> str:
                 f"Query: {user_query}"
             )
         }],
+        caching=True,
         reasoning_effort="low",
         include_reasoning=False,
         max_tokens=100,
@@ -180,10 +185,11 @@ def smart_chat(user_query: str):
         "completion_tokens": usage.completion_tokens,
         "total_tokens": usage.total_tokens,
     }
+    cache_hit = getattr(response, "_hidden_params", {}).get("cache_hit", False)
 
     try:
         cost = completion_cost(completion_response=response)
-        cost_str = f"${cost:.6f}"
+        cost_str = "$0.000000 (local cache)" if cache_hit else f"${cost:.6f}"
     except Exception:
         cost_str = "n/a - maybe this is a free model so it don't take cost"
 
@@ -192,6 +198,7 @@ def smart_chat(user_query: str):
         "model_used":    response.model,
         "answer":        response.choices[0].message.content,
         "latency_sec":   round(latency, 2),
+        "cache_hit":     cache_hit,
         "cost_usd":      cost_str,
         "usage_token":   usage_token
     }
@@ -211,6 +218,7 @@ for index, query in enumerate(queries):
     result = smart_chat(query)
     print(f"🏷️  Task:    {result['detected_task']}")
     print(f"🤖 Model:    {result['model_used']}")
+    print(f"🗃️  Cache hit: {result['cache_hit']}")
     print(f"⏱️  Latency: {result['latency_sec']}s")
     print(f"💰 Cost:    {result['cost_usd']}")
     print(f"💰 Usage Token:    {result['usage_token']}")
@@ -223,34 +231,58 @@ for index, query in enumerate(queries):
 #    Detected task: 'code'
 # 🏷️  Task:    code
 # 🤖 Model:    gpt-4o-2024-08-06
-# ⏱️  Latency: 5.42s
-# 💰 Cost:    $0.003250
-# 💰 Usage Token:    {'prompt_tokens': 16, 'completion_tokens': 321, 'total_tokens': 337}
-# 💬 Answer:  Certainly! The Fibonacci sequence is a series of numbers where each number is the sum of the two preceding ones, typically starting with 0 and 1. Below is a simple Python function to compute the nth F...
+# 🗃️  Cache hit: False
+# ⏱️  Latency: 4.96s
+# 💰 Cost:    $0.003350
+# 💰 Usage Token:    {'prompt_tokens': 16, 'completion_tokens': 331, 'total_tokens': 347}
+# 💬 Answer:  Certainly! Below is an example of a Python function to compute Fibonacci numbers using recursion, iteration, and memoization. Each method has its advantages and use-cases:
+
+# ### Recursive Approach:
+# ```...
 # ======================================================================
 # ❓ Q: Write a Python function to compute Fibonacci numbers.
 #    Detected task: 'code'
 # 🏷️  Task:    code
 # 🤖 Model:    gpt-4o-2024-08-06
-# ⏱️  Latency: 0.01s
-# 💰 Cost:    $0.003250
-# 💰 Usage Token:    {'prompt_tokens': 16, 'completion_tokens': 321, 'total_tokens': 337}
-# 💬 Answer:  Certainly! The Fibonacci sequence is a series of numbers where each number is the sum of the two preceding ones, typically starting with 0 and 1. Below is a simple Python function to compute the nth F...
+# 🗃️  Cache hit: True
+# ⏱️  Latency: 0.02s
+# 💰 Cost:    $0.000000 (local cache)
+# 💰 Usage Token:    {'prompt_tokens': 16, 'completion_tokens': 331, 'total_tokens': 347}
+# 💬 Answer:  Certainly! Below is an example of a Python function to compute Fibonacci numbers using recursion, iteration, and memoization. Each method has its advantages and use-cases:
+
+# ### Recursive Approach:
+# ```...
 # ======================================================================
 # ❓ Q: Summarize the importance of attention mechanism in 2 sentences.
 #    Detected task: 'summary'
 # 🏷️  Task:    summary
 # 🤖 Model:    gpt-4o-mini-2024-07-18
+# 🗃️  Cache hit: False
 # ⏱️  Latency: 2.68s
-# 💰 Cost:    $0.000042
-# 💰 Usage Token:    {'prompt_tokens': 20, 'completion_tokens': 65, 'total_tokens': 85}
-# 💬 Answer:  The attention mechanism is crucial in neural networks as it allows models to focus on specific parts ofthe input data, enhancing their ability to capture relevant information while ignoring irrelevan...
+# 💰 Cost:    $0.000039
+# 💰 Usage Token:    {'prompt_tokens': 20, 'completion_tokens': 60, 'total_tokens': 80}
+# 💬 Answer:  The attention mechanism allows models to dynamically focus on relevant parts of the input data, improving their ability to capture context and relationships within the information. This capability enh...
 # ======================================================================
 # ❓ Q: Tell me a fun fact about elephants.
 #    Detected task: 'general'
 # 🏷️  Task:    general
 # 🤖 Model:    openai/gpt-oss-20b
-# ⏱️  Latency: 2.65s
+# 🗃️  Cache hit: False
+# ⏱️  Latency: 1.52s
 # 💰 Cost:    n/a - maybe this is a free model so it don't take cost
-# 💰 Usage Token:    {'prompt_tokens': 79, 'completion_tokens': 291, 'total_tokens': 370}
-# 💬 Answer:  **Fun Fact:** An elephant’s trunk is not just a nose—it’s a super‑tool made of about 40,000 tiny muscles, no tendons or bones, and it can lift a whole adult human, pick up a single leaf, or even tap t...
+# 💰 Usage Token:    {'prompt_tokens': 79, 'completion_tokens': 281, 'total_tokens': 360}
+# 💬 Answer:  Did you know that an elephant’s trunk is essentially a super‑powered multi‑tool? It’s made of more than40,000 individual muscles—roughly 10,000 more than the entire human body has—and it can lift a 5...
+# ======================================================================
+# ❓ Q: Hi, I'm Thomas. My email is thomas@gmail.com, my mobile is +84-9876543210. Help me write Python code about minus calculation.
+# 🚨 PII REDACTED: [{'type': 'EMAIL', 'count': 1}, {'type': 'PHONE_VN', 'count': 1}]
+#    Detected task: 'code'
+# 🚨 PII REDACTED: [{'type': 'EMAIL', 'count': 1}, {'type': 'PHONE_VN', 'count': 1}]
+# 🏷️  Task:    code
+# 🤖 Model:    gpt-4o-2024-08-06
+# 🗃️  Cache hit: False
+# ⏱️  Latency: 3.16s
+# 💰 Cost:    $0.001950
+# 💰 Usage Token:    {'prompt_tokens': 40, 'completion_tokens': 185, 'total_tokens': 225}
+# 💬 Answer:  Hello Thomas! When working with sensitive information like email addresses and phone numbers, it's important to handle it carefully to protect your privacy.
+
+# Now, for your request regarding Python cod...
