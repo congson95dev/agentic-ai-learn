@@ -273,8 +273,32 @@ def ask(app, question: str) -> dict:
     )
 
 
+def draw_architecture(app, output_path: str | Path) -> Path:
+    """Export the compiled CRAG LangGraph architecture as a PNG.
+
+    If the LangGraph PNG renderer is unavailable, save the Mermaid source
+    instead, so the graph remains inspectable without adding a dependency.
+    """
+    png_path = Path(output_path)
+    mermaid = app.get_graph().draw_mermaid()
+    try:
+        png_path.write_bytes(app.get_graph().draw_mermaid_png())
+    except Exception as error:
+        mermaid_path = png_path.with_suffix(".mmd")
+        mermaid_path.write_text(mermaid, encoding="utf-8")
+        print(
+            "[ARCHITECTURE] Could not render PNG "
+            f"({error.__class__.__name__}); Mermaid diagram saved to: {mermaid_path}"
+        )
+        return mermaid_path
+
+    print(f"[ARCHITECTURE] PNG diagram saved to: {png_path}")
+    return png_path
+
+
 if __name__ == "__main__":
     app = build_crag_app("learn_advance/sample-data/my_paper.pdf")
+    draw_architecture(app, Path(__file__).with_name("crag_architecture.png"))
     result = ask(app, "What is R2 score in the Development of Multiple Combined Regression Methods for Rainfall Measurement") # This question was answered correctly by the local PDF knowledge base.
     print("=" * 20)
     print("VERDICT:", result["verdict"])
