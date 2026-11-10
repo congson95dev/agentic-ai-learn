@@ -1,0 +1,37 @@
+{
+    "name": "Agent A - Coordinator",
+    "description": "Điều phối workflow multi-agent.",
+    "version": "1.0.0",
+    "defaultInputModes": [
+        "text/plain"
+    ],
+    "defaultOutputModes": [
+        "text/plain"
+    ],
+    "capabilities": {
+        "streaming": true
+    },
+    "supportedInterfaces": [
+        {
+            "protocolBinding": "JSONRPC",
+            "url": "http://agent-a:8001/a2a/coordinator",
+            "protocolVersion": "1.0"
+        }
+    ],
+    "skills": [
+        {
+            "id": "coordinate-workflow",
+            "name": "Coordinate Workflow",
+            "description": "Điều phối các agent qua A2A.",
+            "tags": [
+                "coordinator"
+            ],
+            "inputModes": [
+                "text/plain"
+            ],
+            "outputModes": [
+                "text/plain"
+            ]
+        }
+    ]
+}

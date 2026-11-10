@@ -1,0 +1,69 @@
+services:
+  registry:
+    build:
+      context: ..
+      dockerfile: services/registry/Dockerfile
+    ports: ["9000:9000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  agent-a:
+    build: {context: .., dockerfile: agents/agent_a/Dockerfile}
+    environment:
+      REGISTRY_URL: http://registry:9000
+      AGENT_A_BASE_URL: http://agent-a:8001
+    ports: ["8001:8001"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    depends_on:
+      registry: {condition: service_healthy}
+      agent-b: {condition: service_healthy}
+      agent-c: {condition: service_healthy}
+      agent-d: {condition: service_healthy}
+      agent-e: {condition: service_healthy}
+  agent-b:
+    build: {context: .., dockerfile: agents/agent_b/Dockerfile}
+    environment: {REGISTRY_URL: http://registry:9000, AGENT_B_BASE_URL: http://agent-b:8002}
+    ports: ["8002:8002"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    depends_on: {registry: {condition: service_healthy}}
+  agent-c:
+    build: {context: .., dockerfile: agents/agent_c/Dockerfile}
+    environment: {REGISTRY_URL: http://registry:9000, AGENT_C_BASE_URL: http://agent-c:8003}
+    ports: ["8003:8003"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    depends_on: {registry: {condition: service_healthy}}
+  agent-d:
+    build: {context: .., dockerfile: agents/agent_d/Dockerfile}
+    environment: {REGISTRY_URL: http://registry:9000, AGENT_D_BASE_URL: http://agent-d:8004}
+    ports: ["8004:8004"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    depends_on: {registry: {condition: service_healthy}}
+  agent-e:
+    build: {context: .., dockerfile: agents/agent_e/Dockerfile}
+    environment: {REGISTRY_URL: http://registry:9000, AGENT_E_BASE_URL: http://agent-e:8005}
+    ports: ["8005:8005"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8005/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    depends_on: {registry: {condition: service_healthy}}

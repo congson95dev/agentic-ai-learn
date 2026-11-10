@@ -1,0 +1,1 @@
+"""Registry service nội bộ."""

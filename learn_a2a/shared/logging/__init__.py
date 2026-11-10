@@ -1,0 +1,1 @@
+"""Logging dùng chung."""
