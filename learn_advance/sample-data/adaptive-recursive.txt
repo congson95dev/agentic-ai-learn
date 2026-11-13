@@ -1,0 +1,3 @@
+This ordinary report explains the project goals and implementation approach. The text has normal prose paragraphs but no reliable headings or special document structure.
+
+The second paragraph describes the rollout plan, operational checks, and expected maintenance work. A recursive splitter is a safe general-purpose choice for this kind of document.

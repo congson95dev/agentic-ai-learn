@@ -1,0 +1,5 @@
+Topic: Volcanoes erupt when magma pressure fractures surrounding rock layers. Ash clouds can affect aviation routes and local air quality.
+
+Topic: Jazz improvisation uses harmony, rhythm, phrasing, and ensemble interaction during performances.
+
+Topic: Database indexing improves query planning through B-tree statistics, caching, and storage layouts.

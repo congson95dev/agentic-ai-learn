@@ -1,0 +1,7 @@
+Document fragment A contains a nested operational rule.
+    - level one contains a dependency on fragment B
+        - level two contains a dependency on fragment C
+            - level three contains a dependency on fragment D
+Document fragment B says see section 2.1 and refer to appendix A for its exception.
+Document fragment C says see section 3.4 and refer to appendix B for its exception.
+The fragments are intentionally irregular and interdependent.

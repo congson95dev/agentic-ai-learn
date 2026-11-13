@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Adaptive RAG Chunking Strategy</title>
+    <style>
+      :root { color-scheme: light; font-family: Inter, system-ui, sans-serif; }
+      body { max-width: 860px; margin: 48px auto; padding: 0 20px; color: #172033; background: #f5f7fb; }
+      main { background: white; border: 1px solid #dbe2ef; border-radius: 16px; padding: 32px; box-shadow: 0 8px 30px #17203312; }
+      h1 { margin-top: 0; }
+      .muted { color: #63708a; }
+      form { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 24px 0; }
+      button { border: 0; border-radius: 8px; padding: 10px 16px; color: white; background: #315efb; cursor: pointer; }
+      .samples { display: flex; gap: 10px; flex-wrap: wrap; margin: 12px 0 24px; }
+      .samples form { margin: 0; }
+      .samples button { background: #53627d; display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
+      .samples button:hover { background: #35425b; }
+      .samples small { color: #dbe5ff; font-weight: 400; }
+      .error { padding: 12px; color: #8b1e2d; background: #fff0f2; border-radius: 8px; }
+      .result { margin-top: 24px; padding: 20px; border-radius: 12px; background: #eef4ff; }
+      .strategy { font-size: 1.6rem; font-weight: 700; color: #2346b8; }
+      pre { overflow-x: auto; padding: 16px; border-radius: 8px; background: #172033; color: #e8efff; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Adaptive RAG Chunking Strategy</h1>
+      <p class="muted">Upload a document to receive one recommended strategy. This demo does not create chunks or call an LLM.</p>
+      <form action="/analyze" method="post" enctype="multipart/form-data">
+        <input type="file" name="file" required accept=".txt,.md,.markdown,.html,.htm,.xml,.py,.js,.ts,.java,.go,.rs,.c,.cpp,.h,.hpp,.json,.yaml,.yml,.csv,.pdf,.docx">
+        <button type="submit">Analyze document</button>
+      </form>
+      <h2>Try a built-in sample</h2>
+      <p class="muted">These buttons upload the corresponding sample through the same backend analysis flow.</p>
+      <div class="samples">
+        {% for item in [
+          ("structure_based", "Structure-based", "Markdown headings"),
+          ("recursive", "Recursive", "Ordinary prose"),
+          ("semantic", "Semantic", "Topic shifts"),
+          ("fixed_size", "Fixed-size", "Flat text"),
+          ("agentic", "Agentic", "Irregular references")
+        ] %}
+        <form action="/analyze-sample" method="post">
+          <input type="hidden" name="strategy" value="{{ item[0] }}">
+          <button type="submit">{{ item[1] }}<small>{{ item[2] }}</small></button>
+        </form>
+        {% endfor %}
+      </div>
+      <p class="muted">Supported: text/code files, Markdown, HTML, PDF and DOCX.</p>
+      {% if error %}<p class="error">{{ error }}</p>{% endif %}
+      {% if result %}
+      <section class="result">
+        <div class="muted">{{ result.file_name }}</div>
+        <div class="strategy">{{ result.strategy }}</div>
+        <p>{{ result.reason }}</p>
+        <p><strong>Confidence:</strong> {{ result.confidence }}</p>
+        <details>
+          <summary>Analysis signals</summary>
+          <pre>{{ result.signals | tojson(indent=2) }}</pre>
+        </details>
+      </section>
+      {% endif %}
+    </main>
+  </body>
+</html>
