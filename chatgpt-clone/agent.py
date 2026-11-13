@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Annotated, Literal, TypedDict
@@ -8,7 +9,7 @@ from typing import Annotated, Literal, TypedDict
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
-from langchain_openai import ChatOpenAI
+from langchain_groq import ChatGroq
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
@@ -55,11 +56,15 @@ class ChatState(TypedDict, total=False):
     guardrail_message: str
 
 
-MODEL_NAME = "gpt-3.5-turbo"
-router_llm = ChatOpenAI(model=MODEL_NAME, temperature=0).with_structured_output(
+MODEL_NAME = os.getenv("GROQ_MODEL", "groq/openai/gpt-oss-20b")
+# ``groq/`` is a LiteLLM provider prefix. ChatGroq sends the remaining model
+# ID directly to Groq's API, so strip the prefix when it is present.
+if MODEL_NAME.startswith("groq/"):
+    MODEL_NAME = MODEL_NAME.removeprefix("groq/")
+router_llm = ChatGroq(model=MODEL_NAME, temperature=0).with_structured_output(
     RouteDecision, method="function_calling"
 )
-final_llm = ChatOpenAI(model=MODEL_NAME, streaming=True)
+final_llm = ChatGroq(model=MODEL_NAME, streaming=True)
 
 # This graph is assembled manually with StateGraph, rather than with
 # langchain.agents.create_agent(), so AgentMiddleware cannot be attached to it
@@ -170,12 +175,26 @@ def _tool_result_text(result: object) -> str:
 
 def make_specialist(name: AgentName, tools: list[BaseTool], instruction: str):
     """Build an isolated tool-using specialist node."""
-    llm = ChatOpenAI(model=MODEL_NAME, streaming=True).bind_tools(tools, parallel_tool_calls=False)
+    llm = ChatGroq(model=MODEL_NAME, streaming=True).bind_tools(
+        tools,
+        tool_choice="auto",
+        parallel_tool_calls=False,
+    )
     tools_by_name = {tool.name: tool for tool in tools}
 
     async def specialist_node(state: ChatState) -> dict:
         if name not in state["agents"]:
             return {}
+        if name == "documents":
+            # Groq's GPT-OSS models can occasionally hallucinate a tool name
+            # during tool-call generation. RAG is deterministic, so invoke it
+            # directly and pass the retrieved text to the final answer agent.
+            query = _latest_user_text(state.get("messages", []))
+            try:
+                result = _tool_result_text(await rag_tool.ainvoke({"query": query}))
+            except Exception as error:
+                result = f"Document retrieval failed: {error}"
+            return {"messages": [AIMessage(content=f"Document retrieval result:\n{result}")]}
         if not tools:
             return {"messages": [AIMessage(content=f"Internal {name} draft: answer the user's request directly.")]}
 

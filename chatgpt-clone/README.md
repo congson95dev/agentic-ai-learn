@@ -79,7 +79,7 @@ Lệnh trên in bảng PASS/FAIL theo năm nhóm trên. Từ đó, có thể d�
 
 Người dùng có thể tải lên các tệp sau để chatbot đọc và trả lời câu hỏi: `.pdf`, `.docx`, `.txt`, `.md`, `.py` và `.csv`.
 
-Nội dung được tách thành các đoạn, tạo embeddings bằng OpenAI và lưu vào FAISS cục bộ. Các tệp đã tải lên dùng chung một vector store; vì vậy nội dung của những tệp trước đó vẫn có thể được truy xuất trong các cuộc hội thoại sau, cho đến khi bạn xóa dữ liệu cục bộ.
+Nội dung được tách thành các đoạn, tạo embeddings bằng mô hình Hugging Face chạy cục bộ và lưu vào FAISS. Các tệp đã tải lên dùng chung một vector store; vì vậy nội dung của những tệp trước đó vẫn có thể được truy xuất trong các cuộc hội thoại sau, cho đến khi bạn xóa dữ liệu cục bộ.
 
 ## Setup
 
@@ -92,14 +92,17 @@ pip install -r requirements.txt
 Tạo tệp `.env` tại thư mục gốc của repository:
 
 ```env
-OPENAI_API_KEY=your_openai_api_key
+GROQ_API_KEY=your_groq_api_key
+GROQ_MODEL=groq/openai/gpt-oss-20b
 TAVILY_API_KEY=your_tavily_api_key
 AVIATIONSTACK_API_KEY=your_aviationstack_api_key
 ALPHAVANTAGE_API_KEY=your_alphavantage_api_key
 OPENWEATHER_API_KEY=your_openweather_api_key
 ```
 
-`OPENAI_API_KEY` là bắt buộc để chạy chat model và tạo embeddings cho RAG. Những key còn lại chỉ cần thiết khi sử dụng tool tương ứng.
+`GROQ_API_KEY` là bắt buộc để chạy chat model. Embeddings cho RAG được chạy cục bộ và không cần API key. Những key còn lại chỉ cần thiết khi sử dụng tool tương ứng.
+
+Nếu `vector_store/` được tạo bởi phiên bản cũ dùng OpenAI embeddings, lần upload tiếp theo sẽ tự động tạo lại index bằng embedding local mới.
 
 ## MCP:
 

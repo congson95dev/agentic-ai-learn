@@ -117,7 +117,7 @@ async def run_evaluation(
 
     Passing nodes and a graph factory in avoids an import cycle and keeps this
     module reusable for a future graph implementation. Router checks and the
-    live scenario require ``OPENAI_API_KEY``; safety checks do not.
+    live scenario require ``GROQ_API_KEY``; safety checks do not.
     """
     results: list[EvaluationResult] = []
 
