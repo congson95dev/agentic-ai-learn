@@ -164,7 +164,7 @@ async def send_message(
         with destination.open("wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
         try:
-            chunk_count = read_file_text(destination)
+            chunk_count = read_file_text(destination, source_name=file.filename or stored_name)
             logger.info("Upload indexed filename=%s chunks=%d", file.filename, chunk_count)
             uploaded.append(file.filename or stored_name)
         except Exception as error:

@@ -6,6 +6,7 @@ import logging
 import math
 import re
 from collections import Counter
+from datetime import date
 from pathlib import Path
 from typing import Literal
 
@@ -86,7 +87,37 @@ def _loader_for(path: Path):
     return TextLoader(str(path), encoding="utf-8", autodetect_encoding=True)
 
 
-def read_file_text(file_path: str | Path) -> int:
+_METADATA_FIELDS = ("category", "date", "author", "department")
+_METADATA_LINE = re.compile(r"^\s*(category|date|author|department)\s*:\s*(.*?)\s*$", re.I | re.M)
+
+
+def _document_metadata(text: str) -> dict[str, str]:
+    match = re.match(r"\A\s*---\s*\n(.*?)\n---(?:\s*\n|\s*$)", text, re.S)
+    if not match:
+        return {}
+    return {key.lower(): value.strip().strip("\"'") for key, value in _METADATA_LINE.findall(match.group(1)) if value.strip()}
+
+
+def _chunk_documents(documents: list[Document], suffix: str) -> tuple[str, list[Document]]:
+    text = "\n\n".join(doc.page_content for doc in documents)
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
+    if suffix == ".csv":
+        return "row", splitter.split_documents(documents)
+    boundary = None
+    if suffix == ".md" and len(re.findall(r"(?m)^#{1,6}\s+", text)) >= 2:
+        boundary = r"(?=^#{1,6}\s+)"
+    elif suffix == ".py" and len(re.findall(r"(?m)^(?:async\s+def|def|class)\s+", text)) >= 2:
+        boundary = r"(?=^(?:async\s+def|def|class)\s+)"
+    if boundary:
+        sections = [Document(page_content=part, metadata=dict(doc.metadata)) for doc in documents
+                    for part in re.split(boundary, doc.page_content, flags=re.M) if part.strip()]
+        return "structure_based", splitter.split_documents(sections)
+    if "\n" not in text and not re.search(r"[.!?]\s", text):
+        return "fixed_size", RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150, separators=[""]).split_documents(documents)
+    return "recursive", splitter.split_documents(documents)
+
+
+def read_file_text(file_path: str | Path, source_name: str | None = None) -> int:
     """Read an allowed upload and add its text to FAISS. Returns chunk count."""
     path = Path(file_path)
     if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
@@ -95,10 +126,16 @@ def read_file_text(file_path: str | Path) -> int:
     documents: list[Document] = [doc for doc in _loader_for(path).load() if doc.page_content.strip()]
     if not documents:
         raise ValueError("No extractable text was found in this file.")
+    common_metadata = _document_metadata(documents[0].page_content)
     for doc in documents:
-        doc.metadata["source"] = path.name
-
-    chunks = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200).split_documents(documents)
+        doc.metadata.update(common_metadata)
+        if path.suffix.lower() == ".csv":
+            doc.metadata.update({key.lower(): value.strip() for key, value in _METADATA_LINE.findall(doc.page_content) if value.strip()})
+        doc.metadata["source"] = source_name or path.name
+    strategy, chunks = _chunk_documents(documents, path.suffix.lower())
+    for index, chunk in enumerate(chunks):
+        chunk.metadata.update(chunk_strategy=strategy, chunk_index=index)
+    logger.info("RAG chunking source=%s strategy=%s metadata=%s chunks=%d", source_name or path.name, strategy, common_metadata, len(chunks))
     if not chunks:
         raise ValueError("The file did not produce any searchable text chunks.")
 
@@ -115,7 +152,7 @@ def read_file_text(file_path: str | Path) -> int:
     else:
         store = FAISS.from_documents(chunks, embeddings)
     store.save_local(str(VECTOR_STORE_PATH))
-    logger.info("RAG index updated source=%s chunks=%d", path.name, len(chunks))
+    logger.info("RAG index updated source=%s chunks=%d", source_name or path.name, len(chunks))
     return len(chunks)
 
 
@@ -175,62 +212,157 @@ def _keyword_search(documents: list[Document], query: str, k: int = 4) -> list[D
     return [doc for _, _, doc in scored[:k]]
 
 
-def _vector_search(store: FAISS, query: str, k: int = 4) -> list[Document]:
-    return store.similarity_search(query, k=k)
-
-
-def _hybrid_search(store: FAISS, query: str, k: int = 4) -> list[Document]:
+def extract_local_metadata_filters(query: str) -> dict[str, str]:
+    """Recognize explicit metadata labels using values present in the index."""
+    if not (VECTOR_STORE_PATH / "index.faiss").exists():
+        return {}
+    store = FAISS.load_local(str(VECTOR_STORE_PATH), embeddings, allow_dangerous_deserialization=True)
     documents = _store_documents(store)
-    vector_results = _vector_search(store, query, k=max(k, 8))
-    keyword_results = _keyword_search(documents, query, k=max(k, 8))
-    # Reciprocal Rank Fusion is robust when vector and lexical scores have
-    # different scales. Use document identity plus source/content as fallback.
-    def key(doc: Document) -> str:
-        return f"{doc.metadata.get('source', '')}\n{doc.page_content}"
+    labels = {
+        "department": r"(?:phòng(?:\s+ban)?|bộ\s+phận|department)",
+        "author": r"(?:tác\s+giả|author)",
+        "category": r"(?:category|loại\s+tài\s+liệu)",
+    }
+    filters = {}
+    for field, label in labels.items():
+        values = {str(doc.metadata[field]).strip() for doc in documents if doc.metadata.get(field)}
+        for value in sorted(values, key=len, reverse=True):
+            pattern = rf"(?<!\w){label}\s+(?:của\s+)?{re.escape(value)}(?!\w)"
+            if re.search(pattern, query, re.IGNORECASE):
+                filters[field] = value
+                break
+    # An explicitly named unknown department must not silently become an
+    # unfiltered search; missing metadata remains eligible as usual.
+    if "department" not in filters:
+        match = re.search(r"(?i)(?<!\w)(?:phòng(?:\s+ban)?|bộ\s+phận|department)\s+(?:của\s+)?([\w-]+)", query)
+        if match and match.group(1).casefold() not in {"ban", "nào", "này", "đó", "khác", "theo", "của"}:
+            filters["department"] = match.group(1)
+    match = re.search(r"(?i)(?:ngày|date)\s+(\d{1,4})[-/](\d{1,2})[-/](\d{1,4})", query)
+    if match:
+        first, month, last = (int(part) for part in match.groups())
+        year, day = (first, last) if len(match.group(1)) == 4 else (last, first)
+        try:
+            filters["date"] = date(year, month, day).isoformat()
+        except ValueError:
+            logger.warning("RAG metadata extraction invalid_date=%r", match.group(0))
+    return filters
 
-    fused: dict[str, tuple[float, int, Document]] = {}
-    for ranking, results in enumerate((vector_results, keyword_results)):
+
+def _matches_metadata(doc: Document, filters: dict[str, str]) -> bool:
+    """Keep unknown metadata eligible; exclude explicit mismatches only."""
+    for key, value in filters.items():
+        actual = doc.metadata.get(key)
+        if actual is not None and str(actual).strip():
+            if str(actual).strip().casefold() != value.strip().casefold():
+                return False
+    return True
+
+
+def _vector_search(store: FAISS, query: str, k: int = 4, filters: dict[str, str] | None = None) -> list[Document]:
+    filters = filters or {}
+    fetch_k = store.index.ntotal if filters else k
+    return store.similarity_search(query, k=k, fetch_k=fetch_k,
+                                   filter=lambda metadata: _matches_metadata(Document(page_content="", metadata=metadata), filters))
+
+
+def _hybrid_search(store: FAISS, query: str, k: int = 4, filters: dict[str, str] | None = None) -> list[Document]:
+    filters = filters or {}
+    eligible = [doc for doc in _store_documents(store) if _matches_metadata(doc, filters)]
+    rankings = (_vector_search(store, query, k=max(k, 8), filters=filters), _keyword_search(eligible, query, k=max(k, 8)))
+    fused: dict[str, tuple[float, Document]] = {}
+    for results in rankings:
         for rank, doc in enumerate(results, 1):
-            identifier = key(doc)
-            score = 1.0 / (60 + rank)
+            identifier = f"{doc.metadata.get('source', '')}\n{doc.page_content}"
             previous = fused.get(identifier)
-            fused[identifier] = (score + (previous[0] if previous else 0.0), rank, doc)
-    return [item[2] for item in sorted(fused.values(), key=lambda item: -item[0])[:k]]
+            fused[identifier] = ((previous[0] if previous else 0.0) + 1.0 / (60 + rank), doc)
+    return [item[1] for item in sorted(fused.values(), key=lambda item: -item[0])[:k]]
 
 
-def retrieve(query: str) -> str:
+def _translate_query(query: str) -> str:
+    """Translate Vietnamese to English offline when the model is installed."""
+    try:
+        from langdetect import DetectorFactory, LangDetectException, detect
+        import argostranslate.translate
+
+        DetectorFactory.seed = 0
+        try:
+            language = detect(query)
+        except LangDetectException:
+            language = "unknown"
+        if language != "vi":
+            logger.info("RAG translation status=skipped detected_language=%s", language)
+            return ""
+        languages = argostranslate.translate.get_installed_languages()
+        source = next((item for item in languages if item.code == "vi"), None)
+        target = next((item for item in languages if item.code == "en"), None)
+        if not source or not target:
+            logger.warning("RAG translation status=unavailable reason=vi_en_model_missing")
+            return ""
+        translation = source.get_translation(target)
+        if translation is None:
+            logger.warning("RAG translation status=unavailable reason=vi_en_model_missing")
+            return ""
+        result = translation.translate(query).strip()
+        logger.info("RAG translation status=translated provider=argos from=vi to=en")
+        return result
+    except Exception:
+        logger.exception("RAG translation status=failed; searching original query")
+        return ""
+
+
+def _rewrite_query(query: str) -> str:
+    original = " ".join(query.split())
+    translated = _translate_query(original) if original else ""
+    return " ".join(part for part in (original, translated) if part)
+
+
+def _rerank(documents: list[Document], query: str) -> list[Document]:
+    terms = set(_tokens(query))
+    phrases = [phrase.casefold() for phrase in re.findall(r'"([^"]+)"', query)]
+    scored = []
+    for rank, doc in enumerate(documents):
+        text = doc.page_content.casefold()
+        coverage = len(terms & set(_tokens(text))) / max(len(terms), 1)
+        scored.append((coverage + sum(0.3 for phrase in phrases if phrase in text) + 0.15 / (rank + 1), rank, doc))
+    return [doc for _, _, doc in sorted(scored, key=lambda item: (-item[0], item[1]))]
+
+
+def retrieve(query: str, metadata_filter: dict[str, str] | None = None) -> str:
+    rewritten = _rewrite_query(query)
+    filters: dict[str, str] = {}
+    if metadata_filter:
+        unknown = set(metadata_filter) - set(_METADATA_FIELDS)
+        if unknown:
+            raise ValueError(f"Unsupported metadata filters: {', '.join(sorted(unknown))}")
+        filters.update(metadata_filter)
     mode = select_search_mode(query)
-    logger.info("RAG search mode=%s", mode)
+    logger.info("RAG query rewriting original=%r rewritten=%r", query, rewritten)
+    logger.info("RAG search mode=%s metadata_filter=%s", mode, filters)
     if not (VECTOR_STORE_PATH / "index.faiss").exists():
         logger.warning("RAG index is unavailable")
         return "No uploaded documents are available yet. Ask the user to upload a supported file."
     store = FAISS.load_local(str(VECTOR_STORE_PATH), embeddings, allow_dangerous_deserialization=True)
+    eligible = [doc for doc in _store_documents(store) if _matches_metadata(doc, filters)]
     if mode == "vector":
-        documents = _vector_search(store, query)
+        candidates = _vector_search(store, rewritten, k=12, filters=filters)
     elif mode == "keyword":
-        documents = _keyword_search(_store_documents(store), query)
+        candidates = _keyword_search(eligible, rewritten, k=12)
     else:
-        documents = _hybrid_search(store, query)
-    # A specific multiword name can be missed by local hash embeddings. Give
-    # exact name matches precedence, and avoid returning duplicate passages from
-    # copies of the same upload.
-    phrases = re.findall(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b", query)
-    phrases = [" ".join(phrase.lower().split()) for phrase in phrases]
-    exact_matches = [doc for doc in _store_documents(store)
-                     if any(phrase in " ".join(doc.page_content.lower().split()) for phrase in phrases)]
-    unique_documents: list[Document] = []
-    seen: set[str] = set()
-    for doc in [*exact_matches, *documents]:
+        candidates = _hybrid_search(store, rewritten, k=12, filters=filters)
+    phrases = [" ".join(phrase.lower().split()) for phrase in re.findall(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b", query)]
+    exact_matches = [doc for doc in eligible if any(phrase in " ".join(doc.page_content.lower().split()) for phrase in phrases)]
+    unique = []
+    seen = set()
+    for doc in _rerank([*exact_matches, *candidates], rewritten):
         key = " ".join(doc.page_content.lower().split())
         if key not in seen:
             seen.add(key)
-            unique_documents.append(doc)
-        if len(unique_documents) == 4:
+            unique.append(doc)
+        if len(unique) == 4:
             break
-    documents = unique_documents
-    if not documents:
+    logger.info("RAG reranking method=lexical_coverage candidates=%d returned=%d", len(candidates), len(unique))
+    if not unique:
         return "No relevant information was found in uploaded documents."
-    return "\n\n".join(
-        f"Document {index}\nSource: {doc.metadata.get('source', 'Unknown')}\nContent: {doc.page_content}"
-        for index, doc in enumerate(documents, 1)
-    )
+    return "\n\n".join(f"Document {index}\nSource: {doc.metadata.get('source', 'Unknown')}\nMetadata: "
+                       + ", ".join(f"{key}: {doc.metadata[key]}" for key in _METADATA_FIELDS if doc.metadata.get(key))
+                       + f"\nContent: {doc.page_content}" for index, doc in enumerate(unique, 1))

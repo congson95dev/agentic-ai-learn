@@ -46,19 +46,57 @@ Giao diện cũng hỗ trợ tạo và quản lý nhiều cuộc hội thoại, 
 | `save_memory` | Người dùng yêu cầu chatbot ghi nhớ hoặc cần dùng thông tin đã nhớ | Lưu hoặc tìm tối đa 8 bộ nhớ phù hợp trong SQLite. |
 | `purchase_stock` | Yêu cầu mua cổ phiếu | Mô phỏng lệnh mua và tạm dừng graph để chờ phê duyệt. Chỉ `yes` mới hoàn tất lệnh mô phỏng; các lựa chọn khác sẽ hủy lệnh. |
 
-## Search trong RAG
+## Cải thiện chất lượng retrieval
 
-RAG hỗ trợ ba chiến lược và tự chọn theo nội dung câu hỏi:
+Truy xuất và dịch chạy cục bộ; agent dùng model đã cấu hình để nhận diện điều kiện metadata từ câu hỏi:
 
-- **Vector Search**: mặc định cho chatbot tư vấn thông thường, nơi câu hỏi có thể được diễn đạt khác với nội dung tài liệu.
-- **Keyword Search**: dùng khi câu hỏi chứa tên biến/config hoặc chuỗi kỹ thuật cần khớp nguyên văn.
-- **Hybrid Search**: dùng cho các truy vấn phức tạp về tài liệu kỹ thuật, mã lỗi, thuật ngữ chuyên ngành, endpoint, schema hoặc stack trace. Kết quả kết hợp thứ hạng semantic của vector search với điểm lexical BM25-style của keyword search.
+1. **Adaptive chunking strategy**: chọn cách chia theo loại tệp và cấu trúc nội dung. Năm chiến lược thường gặp và trạng thái trong ứng dụng:
 
-Việc chọn chế độ nằm trong log của backend (`rag.py`) và không đưa lên frontend. Mỗi lần truy xuất ghi `RAG search mode=<vector|keyword|hybrid>` để kiểm tra chiến lược đã dùng.
+   | Strategy | Cách chia và điều kiện | Trạng thái |
+   | --- | --- | --- |
+   | **Structure-based** | Chia tại heading của Markdown khi có ít nhất hai heading, hoặc tại định nghĩa `def`, `async def`, `class` cấp cao nhất của Python khi có ít nhất hai định nghĩa. Với CSV, mỗi dòng là một đơn vị ban đầu (`row`). | Đang áp dụng. |
+   | **Fixed-size** | Chia theo số ký tự khi văn bản không có xuống dòng và không có ranh giới câu được nhận diện. | Đang áp dụng. |
+   | **Recursive** | Lần lượt ưu tiên các ranh giới văn bản như đoạn, dòng và khoảng trắng; dùng khi không thỏa điều kiện của structure-based hoặc fixed-size. Cũng dùng để chia tiếp section hoặc dòng quá dài. | Đang áp dụng. |
+   | **Semantic** | Chia theo thay đổi về chủ đề hoặc ý nghĩa giữa các đoạn. | Chưa triển khai. Lý do: cần thêm cơ chế đánh giá sự thay đổi ý nghĩa giữa các đoạn, thường dùng embeddings. |
+   | **Agentic** | Dùng agent/LLM để xác định ranh giới nội dung dựa trên ngữ cảnh. | Chưa triển khai. Lý do: cần gọi LLM hoặc agent để phân tích nội dung, làm tăng thời gian xử lý và có thể phát sinh chi phí model. |
 
-Để thử cả ba chế độ, tải [`sample-data/hybrid-search-sample.md`](sample-data/hybrid-search-sample.md) lên chat. Tệp này có sẵn nội dung kỹ thuật và các câu hỏi mẫu.
+   Các đoạn dài được giới hạn tối đa 1.000 ký tự với overlap 150 ký tự. Log `strategy=row` thể hiện trường hợp CSV; `structure_based`, `fixed_size` và `recursive` là các giá trị còn lại.
+2. **Adaptive search strategy**: tự chọn theo nội dung câu hỏi:
 
-### Example questions
+   - **Vector Search**: mặc định cho câu hỏi thông thường có thể diễn đạt khác nội dung tài liệu.
+   - **Keyword Search**: dùng khi câu hỏi chứa tên biến/config hoặc chuỗi kỹ thuật cần khớp nguyên văn.
+   - **Hybrid Search**: dùng cho truy vấn về tài liệu kỹ thuật, mã lỗi, thuật ngữ chuyên ngành, endpoint, schema hoặc stack trace; kết hợp thứ hạng vector và điểm lexical BM25-style.
+
+   Backend ghi `RAG search mode=<vector|keyword|hybrid>` để kiểm tra chế độ đã chọn.
+3. **Query rewriting**: `langdetect` nhận diện ngôn ngữ; với câu tiếng Việt, Argos Translate dịch toàn bộ câu sang tiếng Anh trên máy và nối bản dịch vào câu gốc trước khi truy xuất. Câu gốc được giữ lại để tìm trong tài liệu tiếng Việt và giữ các mã kỹ thuật. Bản dịch chỉ dùng để tìm kiếm; agent được hướng dẫn trả lời theo ngôn ngữ câu hỏi gốc, trừ khi người dùng yêu cầu ngôn ngữ khác. Không cần LLM. Nếu thiếu model hoặc dịch lỗi, hệ thống ghi cảnh báo và tìm bằng câu gốc. Nhận diện ngôn ngữ có thể sai với câu quá ngắn, không dấu hoặc trộn nhiều ngôn ngữ; bản dịch máy cũng có thể sai.
+4. **Metadata filtering**: gắn thông tin như phòng ban và tác giả vào từng đoạn tài liệu, sau đó dùng thông tin này để giới hạn phạm vi tìm kiếm. Xem ví dụ ở phần dưới.
+
+   **Metadata filtering hoạt động như thế nào?**
+
+   Ghi thông tin ở đầu tệp văn bản hoặc Markdown, trước nội dung tài liệu:
+
+   ```markdown
+   ---
+   category: policy
+   date: 2026-01-15
+   author: Nguyen An
+   department: HR
+   ---
+   # Chính sách nghỉ phép
+   Nhân viên có 12 ngày nghỉ phép năm.
+   ```
+
+   Hệ thống lưu các thông tin này cùng từng đoạn khi tải tệp lên. Sau đó, bạn có thể hỏi tự nhiên: “Theo tài liệu của phòng HR, nhân viên có bao nhiêu ngày nghỉ phép?” Agent dùng LLM và quy tắc cục bộ để nhận diện điều kiện phòng ban và truyền vào bộ lọc. Quy tắc cục bộ đối chiếu giá trị đã lưu trong index và vẫn hoạt động khi LLM gặp lỗi. Có thể yêu cầu nhiều điều kiện; giá trị đã khai báo phải khớp đầy đủ, không phân biệt hoa thường. Các đoạn thiếu trường được lọc vẫn được tìm, nhưng không thể xác nhận chúng thuộc phòng ban hay tác giả đã yêu cầu.
+
+   Với CSV, dùng các cột cùng tên cho từng dòng. Với PDF/DOCX, khối metadata phải nằm ở đầu phần văn bản được trích xuất. Tài liệu không có metadata vẫn được tìm kể cả khi có bộ lọc. Nếu cần lọc chính xác các tài liệu cũ, hãy tải lại sau khi thêm metadata; upload lại sẽ thêm bản mới. Nhận diện cục bộ chỉ hỗ trợ một số cách diễn đạt rõ ràng; nếu cả model và quy tắc đều không nhận ra điều kiện, tìm kiếm có thể không được lọc. Kiểm tra `RAG metadata extraction` và `metadata_filter` trong log.
+
+   Hệ thống cũng tự lưu tên tệp, chiến lược chia, số thứ tự đoạn và metadata do trình đọc tệp cung cấp.
+
+5. **Re-ranking**: lấy tối đa 12 đoạn tài liệu tìm được, sau đó xếp hạng lại dựa trên tỷ lệ từ trong câu hỏi xuất hiện trong đoạn, các cụm từ đặt trong dấu ngoặc kép và một ưu tiên nhỏ cho thứ hạng ban đầu. Hệ thống trả về tối đa 4 đoạn. Đây là lexical reranker, không phải cross-encoder.
+
+### Câu hỏi thử nghiệm
+
+Tải [`hybrid-search-sample.md`](sample-data/hybrid-search-sample.md) để thử các chế độ search:
 
 1. General semantic/vector search: `Vì sao hệ thống cần idempotency key khi thanh toán?`
 2. Hybrid search for an error code: `ERR-PAY-409 nghĩa là gì?`
@@ -66,6 +104,38 @@ Việc chọn chế độ nằm trong log của backend (`rag.py`) và không đ
 4. Hybrid search for technical documentation: `Tài liệu kỹ thuật nói gì về cách xử lý lỗi ConnectionPoolTimeout?`
 5. Hybrid search for terminology: `Giải thích thuật ngữ exponential backoff trong API thanh toán.`
 6. Keyword search for an exact config key: `Trường idempotency_key có tác dụng gì khi thanh toán?`
+
+
+Tải cả hai tệp [`hr-leave-policy.md`](sample-data/hr-leave-policy.md) và [`engineering-leave-policy.md`](sample-data/engineering-leave-policy.md), sau đó thử:
+
+| Câu hỏi | File mong đợi | Kết quả mong đợi |
+| --- | --- | --- |
+| `Theo tài liệu của phòng HR, nhân viên có bao nhiêu ngày nghỉ phép năm?` | `hr-leave-policy.md` | 12 ngày; lọc department và dịch truy vấn tiếng Việt. |
+| `Theo tài liệu của phòng Engineering, khi nghỉ phép cần làm gì với lịch trực?` | `engineering-leave-policy.md` | Bàn giao lịch trực. |
+| `Theo tài liệu của tác giả Nguyen An đề ngày 15/01/2026, ngày phép chuyển sang năm sau thế nào?` | `hr-leave-policy.md` | Tối đa 5 ngày, dùng trước 31/3; hai điều kiện AND. |
+| `Theo tài liệu của phòng Finance, nhân viên được nghỉ phép thế nào?` | Không có nếu chỉ tải hai tệp trên | Hai tệp có phòng ban khác nên bị loại; tài liệu thiếu thông tin phòng ban vẫn có thể xuất hiện. |
+
+Tải các tệp sau để thử metadata trong CSV, DOCX và PDF:
+
+| Tệp | Câu hỏi thử nghiệm | Kết quả mong đợi |
+| --- | --- | --- |
+| [`department-benefits.csv`](sample-data/department-benefits.csv) | Theo tài liệu của phòng HR, nhân viên được hỗ trợ bao nhiêu tiền mỗi năm cho khóa học? | 2 triệu đồng mỗi năm; dòng Engineering có mức hỗ trợ khác. |
+| [`department-benefits.csv`](sample-data/department-benefits.csv) | Theo tài liệu của phòng Engineering, nhân viên được hỗ trợ bao nhiêu tiền mỗi năm cho khóa học kỹ thuật? | 5 triệu đồng mỗi năm. |
+| [`hr-training-policy.docx`](sample-data/hr-training-policy.docx) | Theo tài liệu của phòng HR, nhân viên cần đăng ký khóa đào tạo trước bao nhiêu ngày làm việc? | Ít nhất 7 ngày làm việc. |
+| [`engineering-equipment-policy.pdf`](sample-data/engineering-equipment-policy.pdf) | Theo tài liệu của phòng Engineering, nhân viên nhận máy tính trong bao lâu kể từ ngày bắt đầu làm việc? | Trong vòng 3 ngày làm việc. |
+
+Log backend minh họa (nội dung và số chunk tùy tài liệu):
+
+```text
+RAG chunking source=hr-leave-policy.md strategy=structure_based metadata={'category': 'policy', 'date': '2026-01-15', 'author': 'Nguyen An', 'department': 'HR'} chunks=3
+RAG translation status=translated provider=argos from=vi to=en
+RAG query rewriting original='Theo tài liệu của phòng HR, nhân viên có bao nhiêu ngày nghỉ phép năm?' rewritten='Theo tài liệu của phòng HR, nhân viên có bao nhiêu ngày nghỉ phép năm? According to the HR document, how many days of annual leave do employees have?'
+RAG metadata extraction local_filters={'department': 'HR'} applied_filters={'department': 'HR'}
+RAG search mode=vector metadata_filter={'department': 'HR'}
+RAG reranking method=lexical_coverage candidates=3 returned=3
+```
+
+Log truy vấn chứa câu hỏi gốc và câu đã viết lại; cân nhắc cấu hình logging phù hợp nếu dữ liệu nhạy cảm.
 
 ## Multi-agent
 
@@ -101,7 +171,7 @@ Lệnh trên in bảng PASS/FAIL theo năm nhóm trên. Từ đó, có thể d�
 
 Người dùng có thể tải lên các tệp sau để chatbot đọc và trả lời câu hỏi: `.pdf`, `.docx`, `.txt`, `.md`, `.py` và `.csv`.
 
-Nội dung được tách thành các đoạn, tạo embeddings bằng mô hình Hugging Face chạy cục bộ và lưu vào FAISS. Các tệp đã tải lên dùng chung một vector store; vì vậy nội dung của những tệp trước đó vẫn có thể được truy xuất trong các cuộc hội thoại sau, cho đến khi bạn xóa dữ liệu cục bộ.
+Nội dung được tách thành các đoạn, tạo embeddings bằng bộ băm từ và ký tự chạy cục bộ và lưu vào FAISS. Các tệp đã tải lên dùng chung một vector store; vì vậy nội dung của những tệp trước đó vẫn có thể được truy xuất trong các cuộc hội thoại sau, cho đến khi bạn xóa dữ liệu cục bộ.
 
 ## Setup
 
@@ -109,7 +179,19 @@ Cài đặt dependencies từ thư mục gốc của repository:
 
 ```bash
 pip install -r requirements.txt
+python chatgpt-clone/install_translation_model.py
 ```
+
+**Lưu ý về model dịch:** Lệnh thứ hai tải và cài model Argos Translate Việt → Anh; cần Internet lúc cài, sau đó dịch chạy offline. Model được lưu trong thư mục dữ liệu của người dùng, không nằm trong repository. Trên Linux, đường dẫn mặc định là `~/.local/share/argos-translate/packages` (có thể khác nếu cấu hình `XDG_DATA_HOME`).
+
+Hãy chạy lệnh cài bằng cùng môi trường Python dùng để chạy server. Ví dụ, nếu môi trường ảo nằm tại `venv/` ở thư mục gốc:
+
+```bash
+venv/bin/python -m pip install -r requirements.txt
+venv/bin/python chatgpt-clone/install_translation_model.py
+```
+
+Nếu log báo `RAG translation status=unavailable reason=vi_en_model_missing`, hãy chạy lại lệnh cài model bằng môi trường và tài khoản đang chạy server; khởi động lại server nếu cần. Khi thiếu model, RAG vẫn tìm bằng truy vấn gốc.
 
 Tạo tệp `.env` tại thư mục gốc của repository:
 

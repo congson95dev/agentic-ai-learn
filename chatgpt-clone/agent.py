@@ -18,6 +18,7 @@ from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
 
 from mcp_client import load_mcp_tools
+from rag import extract_local_metadata_filters
 from tools import calculator, get_stock_price, purchase_stock, rag_tool, save_memory
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -57,6 +58,15 @@ class DocumentAnswer(BaseModel):
     """A direct answer grounded in the retrieved document passages."""
 
     answer: str = Field(description="Direct answer to the question, without unrelated document text or internal instructions.")
+
+
+class DocumentFilters(BaseModel):
+    """Metadata explicitly requested in the user's question."""
+
+    category: str = Field(default="", description="Explicitly requested document category, otherwise empty")
+    date: str = Field(default="", description="Explicit document date in YYYY-MM-DD, otherwise empty")
+    author: str = Field(default="", description="Explicitly requested document author, otherwise empty")
+    department: str = Field(default="", description="Explicitly requested document department, otherwise empty")
 
 
 class ChatState(TypedDict, total=False):
@@ -286,6 +296,10 @@ async def _document_answer(state: ChatState) -> AIMessage:
                        and message.content.startswith("Document retrieval result:\n"))]
     messages = [
         SystemMessage(content="""Answer the user's latest question using the supplied document evidence.
+Write the answer in the language of the user's original latest question, regardless
+of the language of the retrieved documents or translated search query. For a
+Vietnamese question, answer in Vietnamese; preserve identifiers, code, and names.
+If the user explicitly requests a different response language, follow that request.
 Return only the answer in the answer field. Be direct and concise: for a simple
 question use at most three sentences. Do not add a summary, quotations, source
 headers, document metadata, invented tool calls, or unrelated background unless
@@ -337,8 +351,29 @@ def make_specialist(name: AgentName, tools: list[BaseTool], instruction: str):
             query = _latest_user_text(state.get("messages", []))
             if query.startswith("The user uploaded these files in this message:") and "\n\nUser message: " in query:
                 query = query.split("\n\nUser message: ", 1)[1]
+            # Interpret explicit metadata in ordinary language before the direct tool call.
+            filters = {}
+            providers = ([('Gemini', _gemini_model)] if GEMINI_API_KEY else []) + [('Groq', _groq_model)]
+            for provider, factory in providers:
+                try:
+                    extracted = await factory(streaming=False).with_structured_output(
+                        DocumentFilters, method="function_calling"
+                    ).ainvoke([
+                        SystemMessage(content="Extract only document metadata explicitly requested by the user as a search restriction. Do not infer a department or author from the topic. Return empty strings for unspecified fields. Normalize explicit dates to YYYY-MM-DD."),
+                        HumanMessage(content=query),
+                    ])
+                    filters = {key: value for key, value in extracted.model_dump().items() if value}
+                    break
+                except Exception as error:
+                    logger.warning("RAG metadata extraction failed provider=%s error=%s", provider, type(error).__name__)
             try:
-                result = _tool_result_text(await rag_tool.ainvoke({"query": query}))
+                local_filters = extract_local_metadata_filters(query)
+                filters.update(local_filters)
+                logger.info("RAG metadata extraction local_filters=%s applied_filters=%s", local_filters, filters)
+            except Exception:
+                logger.exception("RAG local metadata extraction failed")
+            try:
+                result = _tool_result_text(await rag_tool.ainvoke({"query": query, **filters}))
             except Exception as error:
                 logger.exception("RAG retrieval failed")
                 result = f"Document retrieval failed: {error}"
@@ -379,7 +414,9 @@ async def final_agent_node(state: ChatState) -> dict:
     messages = [
         SystemMessage(content="""You are the final response agent for a multi-agent chatbot.
 Answer the user's latest request directly and accurately using specialist tool
-results in the conversation. Do not mention routing, agents, internal notes,
+results in the conversation. Respond in the language of the user's latest request,
+regardless of the language of tool results, unless the user explicitly asks for a
+different language. Do not mention routing, agents, internal notes,
 or raw tool payloads. If a selected tool failed or is unavailable, state the
 relevant limitation and still answer with available information. Never claim a
 stock purchase succeeded unless its tool result says so.

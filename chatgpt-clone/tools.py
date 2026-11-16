@@ -80,9 +80,10 @@ def get_stock_price(symbol: str) -> dict | str:
 
 
 @tool
-def rag_tool(query: str) -> str:
-    """Retrieve passages from uploaded files with automatic vector/keyword/hybrid search."""
-    return retrieve(query)
+def rag_tool(query: str, category: str = "", date: str = "", author: str = "", department: str = "") -> str:
+    """Search uploaded files. Set category, date (YYYY-MM-DD), author or department only if explicitly requested; values must match metadata exactly."""
+    filters = {key: value for key, value in {"category": category, "date": date, "author": author, "department": department}.items() if value}
+    return retrieve(query, metadata_filter=filters)
 
 
 @tool
