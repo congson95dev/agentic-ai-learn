@@ -67,6 +67,8 @@ Truy xuất và dịch chạy cục bộ; agent dùng model đã cấu hình đ�
    - **Keyword Search**: dùng khi câu hỏi chứa tên biến/config hoặc chuỗi kỹ thuật cần khớp nguyên văn.
    - **Hybrid Search**: dùng cho truy vấn về tài liệu kỹ thuật, mã lỗi, thuật ngữ chuyên ngành, endpoint, schema hoặc stack trace; kết hợp thứ hạng vector và điểm lexical BM25-style.
 
+   Khi có bộ lọc metadata, truy vấn vốn dùng vector sẽ chuyển sang hybrid để tìm thêm theo từ khóa. Các đoạn khớp metadata rõ ràng được ưu tiên trong nhóm ứng viên; đoạn thiếu metadata vẫn đủ điều kiện.
+
    Backend ghi `RAG search mode=<vector|keyword|hybrid>` để kiểm tra chế độ đã chọn.
 3. **Query rewriting**: `langdetect` nhận diện ngôn ngữ; với câu tiếng Việt, Argos Translate dịch toàn bộ câu sang tiếng Anh trên máy và nối bản dịch vào câu gốc trước khi truy xuất. Câu gốc được giữ lại để tìm trong tài liệu tiếng Việt và giữ các mã kỹ thuật. Bản dịch chỉ dùng để tìm kiếm; agent được hướng dẫn trả lời theo ngôn ngữ câu hỏi gốc, trừ khi người dùng yêu cầu ngôn ngữ khác. Không cần LLM. Nếu thiếu model hoặc dịch lỗi, hệ thống ghi cảnh báo và tìm bằng câu gốc. Nhận diện ngôn ngữ có thể sai với câu quá ngắn, không dấu hoặc trộn nhiều ngôn ngữ; bản dịch máy cũng có thể sai.
 4. **Metadata filtering**: gắn thông tin như phòng ban và tác giả vào từng đoạn tài liệu, sau đó dùng thông tin này để giới hạn phạm vi tìm kiếm. Xem ví dụ ở phần dưới.
@@ -131,7 +133,7 @@ RAG chunking source=hr-leave-policy.md strategy=structure_based metadata={'categ
 RAG translation status=translated provider=argos from=vi to=en
 RAG query rewriting original='Theo tài liệu của phòng HR, nhân viên có bao nhiêu ngày nghỉ phép năm?' rewritten='Theo tài liệu của phòng HR, nhân viên có bao nhiêu ngày nghỉ phép năm? According to the HR document, how many days of annual leave do employees have?'
 RAG metadata extraction local_filters={'department': 'HR'} applied_filters={'department': 'HR'}
-RAG search mode=vector metadata_filter={'department': 'HR'}
+RAG search mode=hybrid metadata_filter={'department': 'HR'}
 RAG reranking method=lexical_coverage candidates=3 returned=3
 ```
 
@@ -196,6 +198,8 @@ Nếu log báo `RAG translation status=unavailable reason=vi_en_model_missing`, 
 Tạo tệp `.env` tại thư mục gốc của repository:
 
 ```env
+OPENAI_API_KEY=your_openai_api_key
+OPENAI_MODEL=gpt-4o-mini
 GEMINI_API_KEY=your_google_ai_api_key
 GEMINI_MODEL=gemini-2.5-flash
 GROQ_API_KEY=your_groq_api_key
@@ -206,7 +210,7 @@ ALPHAVANTAGE_API_KEY=your_alphavantage_api_key
 OPENWEATHER_API_KEY=your_openweather_api_key
 ```
 
-Gemini là provider chính. `GEMINI_API_KEY` dùng cho Gemini và `GEMINI_MODEL` mặc định là `gemini-2.5-flash`. Nếu Gemini không được cấu hình hoặc một lần gọi Gemini bị lỗi, ứng dụng tự động thử lại bằng Groq qua `GROQ_API_KEY`/`GROQ_MODEL`. Embeddings cho RAG được chạy cục bộ và không cần API key. Những key còn lại chỉ cần thiết khi sử dụng tool tương ứng.
+Ứng dụng thử các provider đã cấu hình theo thứ tự OpenAI → Gemini → Groq. Mỗi lần gọi có tối đa 5 giây; nếu quá thời gian hoặc gặp lỗi, ứng dụng chuyển sang provider tiếp theo. Cấu hình API key tương ứng và tùy chọn `OPENAI_MODEL` (mặc định `gpt-4o-mini`), `GEMINI_MODEL` hoặc `GROQ_MODEL`. Embeddings cho RAG chạy cục bộ và không cần API key. Những key còn lại chỉ cần thiết khi sử dụng tool tương ứng.
 
 Nếu `vector_store/` được tạo bởi phiên bản cũ dùng OpenAI embeddings, lần upload tiếp theo sẽ tự động tạo lại index bằng embedding local mới.
 

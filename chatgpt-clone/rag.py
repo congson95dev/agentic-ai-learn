@@ -212,19 +212,36 @@ def _keyword_search(documents: list[Document], query: str, k: int = 4) -> list[D
     return [doc for _, _, doc in scored[:k]]
 
 
+_FILTER_LABELS = {
+    "department": r"(?:phòng(?:\s+ban)?|bộ\s+phận|department)",
+    "author": r"(?:tác\s+giả|author)",
+    "category": r"(?:category|loại\s+tài\s+liệu)",
+}
+
+
+def validate_metadata_filters(query: str, proposed: dict[str, str], local: dict[str, str]) -> dict[str, str]:
+    """Accept model filters only when their field and value are explicit in the query."""
+    validated = {}
+    for field, value in proposed.items():
+        if field == "date":
+            if local.get(field) == value:
+                validated[field] = value
+        elif field in _FILTER_LABELS and value.strip():
+            pattern = rf"(?<!\w){_FILTER_LABELS[field]}\s+(?:của\s+)?{re.escape(value.strip())}(?!\w)"
+            if re.search(pattern, query, re.IGNORECASE):
+                validated[field] = value.strip()
+    validated.update(local)
+    return validated
+
+
 def extract_local_metadata_filters(query: str) -> dict[str, str]:
     """Recognize explicit metadata labels using values present in the index."""
     if not (VECTOR_STORE_PATH / "index.faiss").exists():
         return {}
     store = FAISS.load_local(str(VECTOR_STORE_PATH), embeddings, allow_dangerous_deserialization=True)
     documents = _store_documents(store)
-    labels = {
-        "department": r"(?:phòng(?:\s+ban)?|bộ\s+phận|department)",
-        "author": r"(?:tác\s+giả|author)",
-        "category": r"(?:category|loại\s+tài\s+liệu)",
-    }
     filters = {}
-    for field, label in labels.items():
+    for field, label in _FILTER_LABELS.items():
         values = {str(doc.metadata[field]).strip() for doc in documents if doc.metadata.get(field)}
         for value in sorted(values, key=len, reverse=True):
             pattern = rf"(?<!\w){label}\s+(?:của\s+)?{re.escape(value)}(?!\w)"
@@ -335,14 +352,18 @@ def retrieve(query: str, metadata_filter: dict[str, str] | None = None) -> str:
         if unknown:
             raise ValueError(f"Unsupported metadata filters: {', '.join(sorted(unknown))}")
         filters.update(metadata_filter)
-    mode = select_search_mode(query)
+    selected_mode = select_search_mode(query)
+    # A metadata-constrained question often contains exact terms in the source
+    # language; combine lexical and vector retrieval to avoid missing them.
+    mode = "hybrid" if filters and selected_mode == "vector" else selected_mode
     logger.info("RAG query rewriting original=%r rewritten=%r", query, rewritten)
     logger.info("RAG search mode=%s metadata_filter=%s", mode, filters)
     if not (VECTOR_STORE_PATH / "index.faiss").exists():
         logger.warning("RAG index is unavailable")
         return "No uploaded documents are available yet. Ask the user to upload a supported file."
     store = FAISS.load_local(str(VECTOR_STORE_PATH), embeddings, allow_dangerous_deserialization=True)
-    eligible = [doc for doc in _store_documents(store) if _matches_metadata(doc, filters)]
+    documents = _store_documents(store)
+    eligible = [doc for doc in documents if _matches_metadata(doc, filters)]
     if mode == "vector":
         candidates = _vector_search(store, rewritten, k=12, filters=filters)
     elif mode == "keyword":
@@ -353,7 +374,12 @@ def retrieve(query: str, metadata_filter: dict[str, str] | None = None) -> str:
     exact_matches = [doc for doc in eligible if any(phrase in " ".join(doc.page_content.lower().split()) for phrase in phrases)]
     unique = []
     seen = set()
-    for doc in _rerank([*exact_matches, *candidates], rewritten):
+    ranked = _rerank([*exact_matches, *candidates], rewritten)
+    if filters:
+        # Unknown metadata remains searchable, but explicit matches take
+        # precedence over unknowns when both reach the candidate set.
+        ranked.sort(key=lambda doc: sum(bool(str(doc.metadata.get(key) or "").strip()) for key in filters), reverse=True)
+    for doc in ranked:
         key = " ".join(doc.page_content.lower().split())
         if key not in seen:
             seen.add(key)

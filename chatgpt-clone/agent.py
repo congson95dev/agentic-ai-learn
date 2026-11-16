@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -10,15 +11,17 @@ from typing import Annotated, Literal, TypedDict
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
+from langchain_core.runnables import RunnableLambda
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_groq import ChatGroq
+from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
 
 from mcp_client import load_mcp_tools
-from rag import extract_local_metadata_filters
+from rag import extract_local_metadata_filters, validate_metadata_filters
 from tools import calculator, get_stock_price, purchase_stock, rag_tool, save_memory
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -75,6 +78,9 @@ class ChatState(TypedDict, total=False):
     guardrail_message: str
 
 
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+MODEL_TIMEOUT_SECONDS = 5
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "groq/openai/gpt-oss-20b")
@@ -84,41 +90,54 @@ if GROQ_MODEL.startswith("groq/"):
     GROQ_MODEL = GROQ_MODEL.removeprefix("groq/")
 
 
+def _openai_model(*, temperature: float = 0, streaming: bool = False):
+    return ChatOpenAI(model=OPENAI_MODEL, temperature=temperature, streaming=streaming,
+                      api_key=OPENAI_API_KEY, max_retries=0)
+
+
 def _gemini_model(*, temperature: float = 0, streaming: bool = False):
-    """Create the primary Gemini chat model when Gemini credentials exist."""
-    kwargs = {"model": GEMINI_MODEL, "temperature": temperature, "streaming": streaming}
-    if GEMINI_API_KEY:
-        kwargs["google_api_key"] = GEMINI_API_KEY
-    return ChatGoogleGenerativeAI(**kwargs)
+    return ChatGoogleGenerativeAI(model=GEMINI_MODEL, temperature=temperature,
+                                  streaming=streaming, google_api_key=GEMINI_API_KEY,
+                                  max_retries=0)
 
 
 def _groq_model(*, temperature: float = 0, streaming: bool = False):
-    """Create the Groq fallback chat model."""
-    return ChatGroq(model=GROQ_MODEL, temperature=temperature, streaming=streaming)
+    return ChatGroq(model=GROQ_MODEL, temperature=temperature, streaming=streaming,
+                    max_retries=0)
 
 
-def _primary_with_groq_fallback(primary_factory, fallback_factory):
-    """Use Gemini first and retry the same operation with Groq on failure."""
-    fallback = fallback_factory()
-    if not GEMINI_API_KEY:
-        logger.warning("GEMINI_API_KEY/GOOGLE_API_KEY is not set; using Groq directly")
-        return fallback
-    try:
-        primary = primary_factory()
-    except Exception as error:
-        logger.warning("Gemini model could not be initialized; using Groq: %s", error)
-        return fallback
-    return primary.with_fallbacks([fallback])
+def _providers():
+    return [(name, factory) for name, factory, key in (
+        ("OpenAI", _openai_model, OPENAI_API_KEY),
+        ("Gemini", _gemini_model, GEMINI_API_KEY),
+        ("Groq", _groq_model, os.getenv("GROQ_API_KEY")),
+    ) if key]
 
 
-router_llm = _primary_with_groq_fallback(
-    lambda: _gemini_model().with_structured_output(RouteDecision, method="function_calling"),
-    lambda: _groq_model().with_structured_output(RouteDecision, method="function_calling"),
+async def _invoke_with_timeout(runnable, messages, config=None):
+    return await asyncio.wait_for(
+        runnable.ainvoke(messages, config=config), timeout=MODEL_TIMEOUT_SECONDS
+    )
+
+
+def _with_provider_fallback(build):
+    """Try each configured provider with a separate deadline."""
+    async def invoke(messages, config):
+        last_error = None
+        for name, factory in _providers():
+            try:
+                return await _invoke_with_timeout(build(factory), messages, config)
+            except Exception as error:
+                last_error = error
+                logger.warning("Model call failed provider=%s error=%s", name, type(error).__name__)
+        raise RuntimeError("All configured model providers failed or no API keys are configured") from last_error
+    return RunnableLambda(invoke)
+
+
+router_llm = _with_provider_fallback(
+    lambda factory: factory().with_structured_output(RouteDecision, method="function_calling")
 )
-final_llm = _primary_with_groq_fallback(
-    lambda: _gemini_model(streaming=True),
-    lambda: _groq_model(streaming=True),
-)
+final_llm = _with_provider_fallback(lambda factory: factory(streaming=True))
 
 # This graph is assembled manually with StateGraph, rather than with
 # langchain.agents.create_agent(), so AgentMiddleware cannot be attached to it
@@ -312,12 +331,12 @@ Never claim a fact is absent from the entire document based on excerpts alone.""
         HumanMessage(content=f"Latest question: {question}\n\nDocument evidence:\n{evidence}"),
     ]
     detailed = bool(re.search(r"(?i)\b(?:detail(?:ed|s)?|summari[sz]e|summary|explain|analysis|compare|full)\b|chi tiết|tóm tắt|giải thích|phân tích", question))
-    providers = ([('Gemini', _gemini_model)] if GEMINI_API_KEY else []) + [('Groq', _groq_model)]
+    providers = _providers()
     for name, factory in providers:
         try:
-            result = await factory(streaming=False).with_structured_output(
+            result = await _invoke_with_timeout(factory(streaming=False).with_structured_output(
                 DocumentAnswer, method="function_calling"
-            ).ainvoke(messages)
+            ), messages)
             text = _clean_user_facing_text(result.answer)
             sentences = re.split(r"(?<=[.!?])\s+", text.strip())
             if (_invalid_final_response(text, document_request=True)
@@ -331,13 +350,10 @@ Never claim a fact is absent from the entire document based on excerpts alone.""
 
 def make_specialist(name: AgentName, tools: list[BaseTool], instruction: str):
     """Build an isolated tool-using specialist node."""
-    llm = _primary_with_groq_fallback(
-        lambda: _gemini_model(streaming=True).bind_tools(
+    llm = _with_provider_fallback(
+        lambda factory: factory(streaming=True).bind_tools(
             tools, tool_choice="auto", parallel_tool_calls=False
-        ),
-        lambda: _groq_model(streaming=True).bind_tools(
-            tools, tool_choice="auto", parallel_tool_calls=False
-        ),
+        )
     )
     tools_by_name = {tool.name: tool for tool in tools}
 
@@ -353,12 +369,12 @@ def make_specialist(name: AgentName, tools: list[BaseTool], instruction: str):
                 query = query.split("\n\nUser message: ", 1)[1]
             # Interpret explicit metadata in ordinary language before the direct tool call.
             filters = {}
-            providers = ([('Gemini', _gemini_model)] if GEMINI_API_KEY else []) + [('Groq', _groq_model)]
+            providers = _providers()
             for provider, factory in providers:
                 try:
-                    extracted = await factory(streaming=False).with_structured_output(
+                    extracted = await _invoke_with_timeout(factory(streaming=False).with_structured_output(
                         DocumentFilters, method="function_calling"
-                    ).ainvoke([
+                    ), [
                         SystemMessage(content="Extract only document metadata explicitly requested by the user as a search restriction. Do not infer a department or author from the topic. Return empty strings for unspecified fields. Normalize explicit dates to YYYY-MM-DD."),
                         HumanMessage(content=query),
                     ])
@@ -368,10 +384,11 @@ def make_specialist(name: AgentName, tools: list[BaseTool], instruction: str):
                     logger.warning("RAG metadata extraction failed provider=%s error=%s", provider, type(error).__name__)
             try:
                 local_filters = extract_local_metadata_filters(query)
-                filters.update(local_filters)
+                filters = validate_metadata_filters(query, filters, local_filters)
                 logger.info("RAG metadata extraction local_filters=%s applied_filters=%s", local_filters, filters)
             except Exception:
                 logger.exception("RAG local metadata extraction failed")
+                filters = validate_metadata_filters(query, filters, {})
             try:
                 result = _tool_result_text(await rag_tool.ainvoke({"query": query, **filters}))
             except Exception as error:
@@ -435,7 +452,7 @@ entire document based only on retrieved excerpts."""),
     if _invalid_final_response(text, document_request=document_request):
         logger.warning("Final response contained internal instructions or a simulated tool call; retrying with Groq")
         try:
-            response = await _groq_model(streaming=False).ainvoke(messages)
+            response = await _invoke_with_timeout(_groq_model(streaming=False), messages)
             text = _clean_user_facing_text(response.content)
         except Exception:
             logger.exception("Final response retry failed")
