@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from pathlib import Path
@@ -9,6 +10,7 @@ from typing import Annotated, Literal, TypedDict
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_groq import ChatGroq
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, StateGraph
@@ -20,6 +22,7 @@ from tools import calculator, get_stock_price, purchase_stock, rag_tool, save_me
 
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR.parent / ".env")
+logger = logging.getLogger("uvicorn.error.agent")
 
 LOCAL_TOOLS = [calculator, get_stock_price, rag_tool, purchase_stock, save_memory]
 MCP_TOOLS = load_mcp_tools()
@@ -50,21 +53,62 @@ class RouteDecision(BaseModel):
     agents: list[AgentName] = Field(min_length=1)
 
 
+class DocumentAnswer(BaseModel):
+    """A direct answer grounded in the retrieved document passages."""
+
+    answer: str = Field(description="Direct answer to the question, without unrelated document text or internal instructions.")
+
+
 class ChatState(TypedDict, total=False):
     messages: Annotated[list[BaseMessage], add_messages]
     agents: list[AgentName]
     guardrail_message: str
 
 
-MODEL_NAME = os.getenv("GROQ_MODEL", "groq/openai/gpt-oss-20b")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "groq/openai/gpt-oss-20b")
 # ``groq/`` is a LiteLLM provider prefix. ChatGroq sends the remaining model
 # ID directly to Groq's API, so strip the prefix when it is present.
-if MODEL_NAME.startswith("groq/"):
-    MODEL_NAME = MODEL_NAME.removeprefix("groq/")
-router_llm = ChatGroq(model=MODEL_NAME, temperature=0).with_structured_output(
-    RouteDecision, method="function_calling"
+if GROQ_MODEL.startswith("groq/"):
+    GROQ_MODEL = GROQ_MODEL.removeprefix("groq/")
+
+
+def _gemini_model(*, temperature: float = 0, streaming: bool = False):
+    """Create the primary Gemini chat model when Gemini credentials exist."""
+    kwargs = {"model": GEMINI_MODEL, "temperature": temperature, "streaming": streaming}
+    if GEMINI_API_KEY:
+        kwargs["google_api_key"] = GEMINI_API_KEY
+    return ChatGoogleGenerativeAI(**kwargs)
+
+
+def _groq_model(*, temperature: float = 0, streaming: bool = False):
+    """Create the Groq fallback chat model."""
+    return ChatGroq(model=GROQ_MODEL, temperature=temperature, streaming=streaming)
+
+
+def _primary_with_groq_fallback(primary_factory, fallback_factory):
+    """Use Gemini first and retry the same operation with Groq on failure."""
+    fallback = fallback_factory()
+    if not GEMINI_API_KEY:
+        logger.warning("GEMINI_API_KEY/GOOGLE_API_KEY is not set; using Groq directly")
+        return fallback
+    try:
+        primary = primary_factory()
+    except Exception as error:
+        logger.warning("Gemini model could not be initialized; using Groq: %s", error)
+        return fallback
+    return primary.with_fallbacks([fallback])
+
+
+router_llm = _primary_with_groq_fallback(
+    lambda: _gemini_model().with_structured_output(RouteDecision, method="function_calling"),
+    lambda: _groq_model().with_structured_output(RouteDecision, method="function_calling"),
 )
-final_llm = ChatGroq(model=MODEL_NAME, streaming=True)
+final_llm = _primary_with_groq_fallback(
+    lambda: _gemini_model(streaming=True),
+    lambda: _groq_model(streaming=True),
+)
 
 # This graph is assembled manually with StateGraph, rather than with
 # langchain.agents.create_agent(), so AgentMiddleware cannot be attached to it
@@ -144,7 +188,14 @@ def _complete_tool_history(messages: list[BaseMessage]) -> list[BaseMessage]:
 
 async def router_node(state: ChatState) -> dict:
     """Choose all independent specialists needed for the current request."""
-    decision = await router_llm.ainvoke([
+    latest_user_text = _latest_user_text(state.get("messages", []))
+    user_messages = [message.content for message in state.get("messages", [])
+                     if isinstance(message, HumanMessage) and isinstance(message.content, str)]
+    upload_marker = "The user uploaded these files in this message:"
+    has_upload = any(upload_marker in text for text in user_messages)
+    is_greeting = latest_user_text.strip().lower().rstrip("!. ") in {"hi", "hello", "hey", "chào", "xin chào"}
+    needs_documents = has_upload and (upload_marker in latest_user_text or not is_greeting)
+    messages = [
         SystemMessage(content="""You route requests for a ChatGPT-like assistant. Select all
 independent specialists needed to answer the latest user request:
 - research: current information from the web
@@ -160,8 +211,21 @@ Choose more than one when the request genuinely needs multiple independent
 sources, for example weather and aviation. Do not select research merely
 because a question is general. Return only the routing decision."""),
         *_model_history(state["messages"]),
-    ])
-    return {"agents": list(dict.fromkeys(decision.agents))}
+    ]
+    try:
+        decision = await router_llm.ainvoke(messages)
+        selected_agents = list(dict.fromkeys(decision.agents))
+        if needs_documents and "documents" not in selected_agents:
+            selected_agents = [name for name in selected_agents if name != "general"] + ["documents"]
+        return {"agents": selected_agents}
+    except Exception as error:
+        # Keep ordinary chat usable if both providers fail or return malformed
+        # structured output.
+        query = _latest_user_text(state.get("messages", [])).lower()
+        document_terms = ("uploaded", "upload", "file", "document", "tệp", "tài liệu")
+        fallback = "documents" if needs_documents or any(term in query for term in document_terms) else "general"
+        logger.warning("Router structured output failed; falling back to %s: %s", fallback, error)
+        return {"agents": [fallback]}
 
 
 def _tool_result_text(result: object) -> str:
@@ -173,12 +237,93 @@ def _tool_result_text(result: object) -> str:
         return str(result)
 
 
+def _clean_user_facing_text(content: object) -> str:
+    """Remove provider reasoning wrappers before text reaches the frontend."""
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        text = "".join(
+            block.get("text", "") if isinstance(block, dict) else str(block)
+            for block in content
+            if not isinstance(block, dict) or (block.get("type") not in {"thinking", "reasoning"} and not block.get("thought"))
+        )
+    else:
+        text = str(content)
+
+    # Some models emit a visible chain-of-thought wrapper or an agent-style
+    # marker even when asked for a direct answer. Keep only the answer section.
+    text = re.sub(r"(?is)<think>.*?</think>", "", text).strip()
+    marker = re.search(r"(?i)\bfinal\s+answer\s*:\s*", text)
+    if marker:
+        text = text[marker.end():].strip()
+    return text
+
+
+def _invalid_final_response(text: str, *, document_request: bool) -> bool:
+    """Reject exposed instructions, private reasoning and invented tool calls."""
+    if not text.strip():
+        return True
+    if re.search(r"(?i)do not mention routing, agents, internal notes|the user (?:is asking|said)|\bi need to use\b", text):
+        return True
+    return document_request and bool(re.search(
+        r"(?i)\btool\s*call\b|\btool_code\b|\brag_tool\b|```\s*(?:json|python)", text
+    ))
+
+
+async def _document_answer(state: ChatState) -> AIMessage:
+    """Generate and validate a structured answer before exposing it to the user."""
+    question = _latest_user_text(state.get("messages", []))
+    if question.startswith("The user uploaded these files in this message:") and "\n\nUser message: " in question:
+        question = question.split("\n\nUser message: ", 1)[1]
+    evidence = next((message.content for message in reversed(state.get("messages", []))
+                     if isinstance(message, AIMessage) and isinstance(message.content, str)
+                     and message.content.startswith("Document retrieval result:\n")), "")
+    if not evidence or evidence.startswith("Document retrieval result:\nDocument retrieval failed:"):
+        return AIMessage(content="I couldn't retrieve the document content. Please try again.")
+
+    history = [message for message in _model_history(state.get("messages", []))
+               if not (isinstance(message, AIMessage) and isinstance(message.content, str)
+                       and message.content.startswith("Document retrieval result:\n"))]
+    messages = [
+        SystemMessage(content="""Answer the user's latest question using the supplied document evidence.
+Return only the answer in the answer field. Be direct and concise: for a simple
+question use at most three sentences. Do not add a summary, quotations, source
+headers, document metadata, invented tool calls, or unrelated background unless
+the user explicitly asks for them. Distinguish a person's role in the document
+from their current occupation. If the question asks what a person does and the
+evidence identifies them as a co-author, mention that role and their documented
+affiliation; say if their current occupation is not established.
+Never claim a fact is absent from the entire document based on excerpts alone."""),
+        *history,
+        HumanMessage(content=f"Latest question: {question}\n\nDocument evidence:\n{evidence}"),
+    ]
+    detailed = bool(re.search(r"(?i)\b(?:detail(?:ed|s)?|summari[sz]e|summary|explain|analysis|compare|full)\b|chi tiết|tóm tắt|giải thích|phân tích", question))
+    providers = ([('Gemini', _gemini_model)] if GEMINI_API_KEY else []) + [('Groq', _groq_model)]
+    for name, factory in providers:
+        try:
+            result = await factory(streaming=False).with_structured_output(
+                DocumentAnswer, method="function_calling"
+            ).ainvoke(messages)
+            text = _clean_user_facing_text(result.answer)
+            sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+            if (_invalid_final_response(text, document_request=True)
+                    or (not detailed and (len(text) > 750 or len(sentences) > 3))):
+                raise ValueError("document answer failed output validation")
+            return AIMessage(content=text)
+        except Exception as error:
+            logger.warning("Document answer failed provider=%s error=%s", name, type(error).__name__)
+    return AIMessage(content="I couldn't produce a reliable answer from the document. Please try again.")
+
+
 def make_specialist(name: AgentName, tools: list[BaseTool], instruction: str):
     """Build an isolated tool-using specialist node."""
-    llm = ChatGroq(model=MODEL_NAME, streaming=True).bind_tools(
-        tools,
-        tool_choice="auto",
-        parallel_tool_calls=False,
+    llm = _primary_with_groq_fallback(
+        lambda: _gemini_model(streaming=True).bind_tools(
+            tools, tool_choice="auto", parallel_tool_calls=False
+        ),
+        lambda: _groq_model(streaming=True).bind_tools(
+            tools, tool_choice="auto", parallel_tool_calls=False
+        ),
     )
     tools_by_name = {tool.name: tool for tool in tools}
 
@@ -190,9 +335,12 @@ def make_specialist(name: AgentName, tools: list[BaseTool], instruction: str):
             # during tool-call generation. RAG is deterministic, so invoke it
             # directly and pass the retrieved text to the final answer agent.
             query = _latest_user_text(state.get("messages", []))
+            if query.startswith("The user uploaded these files in this message:") and "\n\nUser message: " in query:
+                query = query.split("\n\nUser message: ", 1)[1]
             try:
                 result = _tool_result_text(await rag_tool.ainvoke({"query": query}))
             except Exception as error:
+                logger.exception("RAG retrieval failed")
                 result = f"Document retrieval failed: {error}"
             return {"messages": [AIMessage(content=f"Document retrieval result:\n{result}")]}
         if not tools:
@@ -226,16 +374,38 @@ async def final_agent_node(state: ChatState) -> dict:
     """Create the sole user-facing answer from all specialist findings."""
     if guardrail_message := state.get("guardrail_message"):
         return {"messages": [AIMessage(content=guardrail_message)]}
-    response = await final_llm.ainvoke([
+    if "documents" in state.get("agents", []):
+        return {"messages": [await _document_answer(state)]}
+    messages = [
         SystemMessage(content="""You are the final response agent for a multi-agent chatbot.
 Answer the user's latest request directly and accurately using specialist tool
 results in the conversation. Do not mention routing, agents, internal notes,
 or raw tool payloads. If a selected tool failed or is unavailable, state the
 relevant limitation and still answer with available information. Never claim a
-stock purchase succeeded unless its tool result says so."""),
+stock purchase succeeded unless its tool result says so.
+
+Return only the answer that should be shown to the user. Never output your
+analysis, reasoning, phrases such as "The user said...", or a "Final Answer:"
+label. Answer concisely and directly; do not reproduce raw document excerpts,
+document headers, metadata, or unrelated details. If retrieved excerpts do not
+answer the question, say so; do not claim a person or fact is absent from the
+entire document based only on retrieved excerpts."""),
         *_model_history(state["messages"]),
-    ])
-    return {"messages": [response]}
+    ]
+    response = await final_llm.ainvoke(messages)
+    text = _clean_user_facing_text(response.content)
+    document_request = "documents" in state.get("agents", [])
+    if _invalid_final_response(text, document_request=document_request):
+        logger.warning("Final response contained internal instructions or a simulated tool call; retrying with Groq")
+        try:
+            response = await _groq_model(streaming=False).ainvoke(messages)
+            text = _clean_user_facing_text(response.content)
+        except Exception:
+            logger.exception("Final response retry failed")
+            text = ""
+        if _invalid_final_response(text, document_request=document_request):
+            text = "I couldn't produce a reliable answer from the available information. Please try again."
+    return {"messages": [response.model_copy(update={"content": text})]}
 
 
 graph = StateGraph(ChatState)

@@ -81,7 +81,7 @@ def get_stock_price(symbol: str) -> dict | str:
 
 @tool
 def rag_tool(query: str) -> str:
-    """Retrieve relevant passages from files uploaded by the user."""
+    """Retrieve passages from uploaded files with automatic vector/keyword/hybrid search."""
     return retrieve(query)
 
 

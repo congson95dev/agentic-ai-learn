@@ -22,7 +22,7 @@ from rag import SUPPORTED_EXTENSIONS, read_file_text
 BASE_DIR = Path(__file__).resolve().parent
 UPLOADS_DIR = BASE_DIR / "uploads"
 app = FastAPI(title="Agentic Chatbot")
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("uvicorn.error.chat")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
@@ -90,14 +90,16 @@ async def run_graph(payload, thread_id: str) -> tuple[str, list[dict[str, str]],
     config = {"configurable": {"thread_id": thread_id}, "metadata": {"thread_id": thread_id}, "run_name": "fastapi_chat"}
     chunks: list[str] = []
     calls: list[dict[str, str]] = []
-    async for message, metadata in chatbot.astream(payload, config=config, stream_mode="messages"):
-        log_mcp_activity(message)
-        if isinstance(message, AIMessage):
-            for name in tool_call_names(message):
-                if name and not any(item["name"] == name for item in calls):
-                    calls.append(tool_call_metadata(name))
-            if is_final_response(metadata) and message.content:
-                chunks.append(message.content if isinstance(message.content, str) else str(message.content))
+    async for mode, event in chatbot.astream(payload, config=config, stream_mode=["messages", "updates"]):
+        if mode == "messages":
+            message, _ = event
+            log_mcp_activity(message)
+            if isinstance(message, AIMessage):
+                for name in tool_call_names(message):
+                    if name and not any(item["name"] == name for item in calls):
+                        calls.append(tool_call_metadata(name))
+        elif mode == "updates":
+            chunks.extend(final_response_text(event))
     unresolved = await pending_interrupt(chatbot, thread_id)
     return "".join(chunks), calls, str(unresolved.value) if unresolved else None
 
@@ -132,9 +134,13 @@ def log_mcp_activity(message) -> None:
         logger.info("MCP tool completed: %s", message.name)
 
 
-def is_final_response(metadata: dict) -> bool:
-    """Specialist prose is internal; only the final agent is streamed to the user."""
-    return metadata.get("langgraph_node") == "final_agent"
+def final_response_text(update: dict) -> list[str]:
+    """Extract only completed final-node messages, never raw model stream chunks."""
+    node_update = update.get("final_agent")
+    if not isinstance(node_update, dict):
+        return []
+    return [message.content for message in node_update.get("messages", [])
+            if isinstance(message, AIMessage) and isinstance(message.content, str) and message.content]
 
 
 @app.post("/api/conversations/{conversation_id}/messages")
@@ -158,7 +164,8 @@ async def send_message(
         with destination.open("wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
         try:
-            read_file_text(destination)
+            chunk_count = read_file_text(destination)
+            logger.info("Upload indexed filename=%s chunks=%d", file.filename, chunk_count)
             uploaded.append(file.filename or stored_name)
         except Exception as error:
             destination.unlink(missing_ok=True)
@@ -183,21 +190,23 @@ async def send_message(
         chunks: list[str] = []
         tool_calls: list[dict[str, str]] = []
         try:
-            async for message_chunk, metadata in chatbot.astream(
-                {"messages": [HumanMessage(content=agent_message)]}, config=config, stream_mode="messages"
+            async for mode, event in chatbot.astream(
+                {"messages": [HumanMessage(content=agent_message)]}, config=config,
+                stream_mode=["messages", "updates"]
             ):
-                log_mcp_activity(message_chunk)
-                if not isinstance(message_chunk, AIMessage):
-                    continue
-                for tool_name in tool_call_names(message_chunk):
-                    if tool_name and not any(item["name"] == tool_name for item in tool_calls):
-                        tool = tool_call_metadata(tool_name)
-                        tool_calls.append(tool)
-                        yield sse("tool", tool)
-                if is_final_response(metadata) and message_chunk.content:
-                    token = message_chunk.content if isinstance(message_chunk.content, str) else str(message_chunk.content)
-                    chunks.append(token)
-                    yield sse("token", {"text": token})
+                if mode == "messages":
+                    message_chunk, _ = event
+                    log_mcp_activity(message_chunk)
+                    if isinstance(message_chunk, AIMessage):
+                        for tool_name in tool_call_names(message_chunk):
+                            if tool_name and not any(item["name"] == tool_name for item in tool_calls):
+                                tool = tool_call_metadata(tool_name)
+                                tool_calls.append(tool)
+                                yield sse("tool", tool)
+                elif mode == "updates":
+                    for answer in final_response_text(event):
+                        chunks.append(answer)
+                        yield sse("token", {"text": answer})
             answer = "".join(chunks)
             unresolved = await pending_interrupt(chatbot, conversation_id)
             interrupt = str(unresolved.value) if unresolved else None

@@ -20,7 +20,7 @@ Chatbot có thể tự quyết định khi nào cần trả lời trực tiếp 
 - lưu và truy xuất bộ nhớ dài hạn;
 - yêu cầu người dùng phê duyệt trước khi mô phỏng mua cổ phiếu.
 
-Giao diện cũng hỗ trợ tạo và quản lý nhiều cuộc hội thoại, stream câu trả lời theo thời gian thực, tải tệp và nhập bằng giọng nói trên trình duyệt.
+Giao diện cũng hỗ trợ tạo và quản lý nhiều cuộc hội thoại, hiển thị tiến trình tool qua stream, tải tệp và nhập bằng giọng nói trên trình duyệt. Câu trả lời cuối được hiển thị sau khi model hoàn tất và ứng dụng xử lý nội dung.
 
 ## Layers
 
@@ -41,9 +41,30 @@ Giao diện cũng hỗ trợ tạo và quản lý nhiều cuộc hội thoại, 
 | `calculator` | Biểu thức toán học | Tính biểu thức với các hàm được giới hạn như `math.sqrt`, `round`, `min`, `max` và `sum`. |
 | `get_stock_price` | Giá cổ phiếu hiện tại, ví dụ `AAPL` hoặc `TSLA` | Gọi Alpha Vantage qua `ALPHAVANTAGE_API_KEY`. |
 | Local Weather MCP tools | Thời tiết hiện tại hoặc dự báo cho một thành phố/địa điểm | `get_current_weather` và `get_weather_forecast` được tự khám phá từ `custom_mcp.py`, chạy local qua stdio và dùng `OPENWEATHER_API_KEY`. Forecast của OpenWeather gồm các mốc ba giờ trong năm ngày. |
-| `rag_tool` | Câu hỏi về tệp đã tải lên | Truy xuất 4 đoạn nội dung tương đồng nhất từ FAISS index cục bộ. |
+| `rag_tool` | Câu hỏi về tệp đã tải lên | Tự chọn vector, keyword hoặc hybrid search và truy xuất tối đa 4 đoạn từ FAISS index cục bộ. |
 | `save_memory` | Người dùng yêu cầu chatbot ghi nhớ hoặc cần dùng thông tin đã nhớ | Lưu hoặc tìm tối đa 8 bộ nhớ phù hợp trong SQLite. |
 | `purchase_stock` | Yêu cầu mua cổ phiếu | Mô phỏng lệnh mua và tạm dừng graph để chờ phê duyệt. Chỉ `yes` mới hoàn tất lệnh mô phỏng; các lựa chọn khác sẽ hủy lệnh. |
+
+## Search trong RAG
+
+RAG hỗ trợ ba chiến lược và tự chọn theo nội dung câu hỏi:
+
+- **Vector Search**: mặc định cho chatbot tư vấn thông thường, nơi câu hỏi có thể được diễn đạt khác với nội dung tài liệu.
+- **Keyword Search**: dùng khi câu hỏi chứa tên biến/config hoặc chuỗi kỹ thuật cần khớp nguyên văn.
+- **Hybrid Search**: dùng cho các truy vấn phức tạp về tài liệu kỹ thuật, mã lỗi, thuật ngữ chuyên ngành, endpoint, schema hoặc stack trace. Kết quả kết hợp thứ hạng semantic của vector search với điểm lexical BM25-style của keyword search.
+
+Việc chọn chế độ nằm trong log của backend (`rag.py`) và không đưa lên frontend. Mỗi lần truy xuất ghi `RAG search mode=<vector|keyword|hybrid>` để kiểm tra chiến lược đã dùng.
+
+Để thử cả ba chế độ, tải [`sample-data/hybrid-search-sample.md`](sample-data/hybrid-search-sample.md) lên chat. Tệp này có sẵn nội dung kỹ thuật và các câu hỏi mẫu.
+
+### Example questions
+
+1. General semantic/vector search: `Vì sao hệ thống cần idempotency key khi thanh toán?`
+2. Hybrid search for an error code: `ERR-PAY-409 nghĩa là gì?`
+3. Hybrid search for an HTTP error: `HTTP 429 cần retry như thế nào?`
+4. Hybrid search for technical documentation: `Tài liệu kỹ thuật nói gì về cách xử lý lỗi ConnectionPoolTimeout?`
+5. Hybrid search for terminology: `Giải thích thuật ngữ exponential backoff trong API thanh toán.`
+6. Keyword search for an exact config key: `Trường idempotency_key có tác dụng gì khi thanh toán?`
 
 ## Multi-agent
 
@@ -92,6 +113,8 @@ pip install -r requirements.txt
 Tạo tệp `.env` tại thư mục gốc của repository:
 
 ```env
+GEMINI_API_KEY=your_google_ai_api_key
+GEMINI_MODEL=gemini-2.5-flash
 GROQ_API_KEY=your_groq_api_key
 GROQ_MODEL=groq/openai/gpt-oss-20b
 TAVILY_API_KEY=your_tavily_api_key
@@ -100,7 +123,7 @@ ALPHAVANTAGE_API_KEY=your_alphavantage_api_key
 OPENWEATHER_API_KEY=your_openweather_api_key
 ```
 
-`GROQ_API_KEY` là bắt buộc để chạy chat model. Embeddings cho RAG được chạy cục bộ và không cần API key. Những key còn lại chỉ cần thiết khi sử dụng tool tương ứng.
+Gemini là provider chính. `GEMINI_API_KEY` dùng cho Gemini và `GEMINI_MODEL` mặc định là `gemini-2.5-flash`. Nếu Gemini không được cấu hình hoặc một lần gọi Gemini bị lỗi, ứng dụng tự động thử lại bằng Groq qua `GROQ_API_KEY`/`GROQ_MODEL`. Embeddings cho RAG được chạy cục bộ và không cần API key. Những key còn lại chỉ cần thiết khi sử dụng tool tương ứng.
 
 Nếu `vector_store/` được tạo bởi phiên bản cũ dùng OpenAI embeddings, lần upload tiếp theo sẽ tự động tạo lại index bằng embedding local mới.
 
