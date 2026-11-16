@@ -6,6 +6,7 @@ Những thay đổi khác:
 - chuyển từ Single Agent thành Multi Agent
 - sử dụng MCP
 - sử dụng Custom Middleware / Guardrail để chặn các request có chứa banned keywords, và mask PII data.
+- sử dụng RAG (tự phân tích và sử dụng 3 dạng search khác nhau sao cho phù hợp: vector search, keyword search, hybrid search)
 - có evaluation (1 dạng unit test cho Agentic AI)
 
 Techstack: **FastAPI**, **Jinja2**, **LangGraph**, **LangChain**, **MCP**
