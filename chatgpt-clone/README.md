@@ -6,7 +6,10 @@ Những thay đổi khác:
 - chuyển từ Single Agent thành Multi Agent
 - sử dụng MCP
 - sử dụng Custom Middleware / Guardrail để chặn các request có chứa banned keywords, và mask PII data.
-- sử dụng RAG (tự phân tích và sử dụng 3 dạng search khác nhau sao cho phù hợp: vector search, keyword search, hybrid search)
+- sử dụng RAG
+- áp dụng các cách sau để cải thiện retrieval quality trong RAG: adaptive chunking strategy, adaptive search strategy, re-rank, query rewriting trước khi thực hiện retrieval, meta-data filter
+- áp dụng Agentic RAG để khi gặp câu hỏi phức tạp thì chia thành tối đa 4 câu query để truy vấn và liên kết document để đưa ra câu trả lời cuối cùng
+- xử lý lỗi "lost in the middle" bằng 4 steps: Re-rank, Contextualization, Context Compression, Context Ordering
 - có evaluation (1 dạng unit test cho Agentic AI)
 
 Techstack: **FastAPI**, **Jinja2**, **LangGraph**, **LangChain**, **MCP**
@@ -42,7 +45,7 @@ Giao diện cũng hỗ trợ tạo và quản lý nhiều cuộc hội thoại, 
 | `calculator` | Biểu thức toán học | Tính biểu thức với các hàm được giới hạn như `math.sqrt`, `round`, `min`, `max` và `sum`. |
 | `get_stock_price` | Giá cổ phiếu hiện tại, ví dụ `AAPL` hoặc `TSLA` | Gọi Alpha Vantage qua `ALPHAVANTAGE_API_KEY`. |
 | Local Weather MCP tools | Thời tiết hiện tại hoặc dự báo cho một thành phố/địa điểm | `get_current_weather` và `get_weather_forecast` được tự khám phá từ `custom_mcp.py`, chạy local qua stdio và dùng `OPENWEATHER_API_KEY`. Forecast của OpenWeather gồm các mốc ba giờ trong năm ngày. |
-| `rag_tool` | Câu hỏi về tệp đã tải lên | Tự chọn vector, keyword hoặc hybrid search và truy xuất tối đa 4 đoạn từ FAISS index cục bộ. |
+| `rag_tool` | Câu hỏi về tệp đã tải lên | Tự áp dụng các strategy và truy xuất tối đa 4 đoạn mỗi câu hỏi từ FAISS index cục bộ. |
 | `save_memory` | Người dùng yêu cầu chatbot ghi nhớ hoặc cần dùng thông tin đã nhớ | Lưu hoặc tìm tối đa 8 bộ nhớ phù hợp trong SQLite. |
 | `purchase_stock` | Yêu cầu mua cổ phiếu | Mô phỏng lệnh mua và tạm dừng graph để chờ phê duyệt. Chỉ `yes` mới hoàn tất lệnh mô phỏng; các lựa chọn khác sẽ hủy lệnh. |
 
@@ -139,6 +142,38 @@ RAG reranking method=lexical_coverage candidates=3 returned=3
 
 Log truy vấn chứa câu hỏi gốc và câu đã viết lại; cân nhắc cấu hình logging phù hợp nếu dữ liệu nhạy cảm.
 
+## Agentic RAG: phân rã câu hỏi và tổng hợp bằng chứng
+
+Agent có thể phân rã câu hỏi thành tối đa 4 câu truy xuất, gộp kết quả và đánh giá bằng chứng. Nếu thông tin chưa đủ, agent có thể thực hiện tối đa 2 vòng tìm bổ sung. Khi có nhiều câu hỏi và nhiều nguồn, hệ thống chọn các đoạn liên quan, thêm metadata sẵn có, loại dòng trùng và sắp xếp lại context trước khi trả lời.
+
+
+### Lost in the middle
+
+**Lost in the middle** là hiện tượng model có thể sử dụng thông tin ở giữa context dài kém hiệu quả hơn thông tin ở đầu hoặc cuối; mức độ phụ thuộc model và tác vụ, không có nghĩa model luôn bỏ qua phần giữa. Hiện tượng này có thể xảy ra với Agentic RAG nhiều lượt retrieval: ví dụ, một câu hỏi tách thành 4 câu con, mỗi câu lấy tối đa 4 đoạn, tạo ra tối đa 16 đoạn trước khi gộp và loại trùng.
+
+Khi câu hỏi ban đầu được phân rã và kết quả đến từ nhiều nguồn, dự án giảm nhiễu và hạn chế hiện tượng này theo thứ tự:
+
+1. **Re-rank:** xếp hạng theo mức khớp từ khóa với câu hỏi, giữ tối đa 6 đoạn phù hợp. Xếp hạng theo từ khóa có thể bỏ sót đoạn liên quan dùng từ khác.
+2. **Contextualization:** thêm nguyên văn metadata có sẵn vào đoạn. Ví dụ chung, nếu metadata xác định rõ loại chính sách, thông tin đó có thể làm rõ “This policy applies to premium customers.” đang nói về chính sách nào. Dự án chỉ thêm các trường metadata có sẵn, không tự viết lại câu hay suy đoán khi thiếu metadata để hạn chế hallucination.
+3. **Context compression:** loại các dòng giống hệt nhau liền kề; không dùng model tóm tắt để tránh làm sai lệch nội dung.
+4. **Context ordering:** đặt đoạn xếp hạng cao nhất ở đầu, đoạn cao thứ hai ở cuối, rồi xếp các đoạn còn lại từ hai phía vào giữa.
+
+Bốn bước này chỉ hỗ trợ giảm nhiễu và rủi ro mất chú ý, không bảo đảm model sử dụng đúng mọi bằng chứng.
+
+### Kiểm tra điều kiện
+
+Với câu hỏi về điều kiện, hệ thống trích xuất các yêu cầu và bằng chứng, kiểm tra trích dẫn rồi xác định kết luận. Khi chưa xác minh được điều kiện bắt buộc, kết quả là **chưa đủ thông tin**. Việc truy xuất và đánh giá bằng model vẫn có thể bỏ sót hoặc hiểu sai thông tin; phép tính tỷ lệ khoản vay hiện chỉ hỗ trợ một mẫu tiếng Việt và dùng năm trước năm hiện tại như một giả định kỹ thuật.
+
+### Câu hỏi thử nghiệm
+
+Tải [`loan-company-a.md`](sample-data/loan-company-a.md) và [`loan-credit-policy.md`](sample-data/loan-credit-policy.md), sau đó hỏi:
+
+`Dựa trên các tài liệu, Công ty A có đủ điều kiện vay 2 tỷ đồng không? Hãy phân tích doanh thu, chính sách tín dụng và rủi ro.`
+
+Kết quả mong đợi: **chưa đủ thông tin** vì thiếu tiêu chí và kết quả đánh giá rủi ro. Nếu tải thêm [`loan-risk-policy.md`](sample-data/loan-risk-policy.md), dữ liệu mẫu cho thấy công ty đáp ứng các điều kiện được nêu. Vector store dùng chung giữa các cuộc hội thoại, nên tài liệu đã tải trước đó có thể ảnh hưởng kết quả.
+
+Log `RAG plan`, `RAG retrieval`, `RAG assessment`, `RAG final context` và `RAG eligibility` giúp theo dõi các bước. Log context có thể chứa nội dung tài liệu.
+
 ## Multi-agent
 
 `agent.py` dùng mô hình **router + specialist agents (small agents) + final agent**. Router chọn một hoặc nhiều specialist agents phù hợp; các specialist agents được chọn chạy song song nếu chúng không phụ thuộc vào nhau. Sau đó `final_agent` tổng hợp kết quả thành một câu trả lời duy nhất. Chỉ gọi những specialist agents được router chọn.
@@ -210,7 +245,7 @@ ALPHAVANTAGE_API_KEY=your_alphavantage_api_key
 OPENWEATHER_API_KEY=your_openweather_api_key
 ```
 
-Ứng dụng thử các provider đã cấu hình theo thứ tự OpenAI → Gemini → Groq. Mỗi lần gọi có tối đa 5 giây; nếu quá thời gian hoặc gặp lỗi, ứng dụng chuyển sang provider tiếp theo. Cấu hình API key tương ứng và tùy chọn `OPENAI_MODEL` (mặc định `gpt-4o-mini`), `GEMINI_MODEL` hoặc `GROQ_MODEL`. Embeddings cho RAG chạy cục bộ và không cần API key. Những key còn lại chỉ cần thiết khi sử dụng tool tương ứng.
+Ứng dụng thử các provider đã cấu hình theo thứ tự OpenAI → Gemini → Groq. Mỗi lần gọi thông thường có tối đa 5 giây; riêng bước phân tích và rà soát điều kiện có tối đa 30 giây cho mỗi provider. Nếu quá thời gian hoặc gặp lỗi, ứng dụng chuyển sang provider tiếp theo; khi nhiều provider cùng chậm, tổng thời gian chờ có thể kéo dài. Với Gemini, hai bước này dùng JSON schema. Log `RAG eligibility model` ghi thời gian và provider đã thành công; log lỗi ghi thời gian cùng giới hạn timeout. Cấu hình API key tương ứng và tùy chọn `OPENAI_MODEL` (mặc định `gpt-4o-mini`), `GEMINI_MODEL` hoặc `GROQ_MODEL`. Embeddings cho RAG chạy cục bộ và không cần API key. Những key còn lại chỉ cần thiết khi sử dụng tool tương ứng.
 
 Nếu `vector_store/` được tạo bởi phiên bản cũ dùng OpenAI embeddings, lần upload tiếp theo sẽ tự động tạo lại index bằng embedding local mới.
 

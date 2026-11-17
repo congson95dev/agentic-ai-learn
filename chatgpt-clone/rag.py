@@ -344,7 +344,8 @@ def _rerank(documents: list[Document], query: str) -> list[Document]:
     return [doc for _, _, doc in sorted(scored, key=lambda item: (-item[0], item[1]))]
 
 
-def retrieve(query: str, metadata_filter: dict[str, str] | None = None) -> str:
+def retrieve_documents(query: str, metadata_filter: dict[str, str] | None = None) -> list[Document]:
+    """Retrieve ranked chunks for one question, preserving source metadata."""
     rewritten = _rewrite_query(query)
     filters: dict[str, str] = {}
     if metadata_filter:
@@ -360,7 +361,7 @@ def retrieve(query: str, metadata_filter: dict[str, str] | None = None) -> str:
     logger.info("RAG search mode=%s metadata_filter=%s", mode, filters)
     if not (VECTOR_STORE_PATH / "index.faiss").exists():
         logger.warning("RAG index is unavailable")
-        return "No uploaded documents are available yet. Ask the user to upload a supported file."
+        raise FileNotFoundError("No uploaded documents are available yet. Ask the user to upload a supported file.")
     store = FAISS.load_local(str(VECTOR_STORE_PATH), embeddings, allow_dangerous_deserialization=True)
     documents = _store_documents(store)
     eligible = [doc for doc in documents if _matches_metadata(doc, filters)]
@@ -387,8 +388,81 @@ def retrieve(query: str, metadata_filter: dict[str, str] | None = None) -> str:
         if len(unique) == 4:
             break
     logger.info("RAG reranking method=lexical_coverage candidates=%d returned=%d", len(candidates), len(unique))
-    if not unique:
-        return "No relevant information was found in uploaded documents."
+    return unique
+
+
+def format_documents(documents: list[Document]) -> str:
     return "\n\n".join(f"Document {index}\nSource: {doc.metadata.get('source', 'Unknown')}\nMetadata: "
                        + ", ".join(f"{key}: {doc.metadata[key]}" for key in _METADATA_FIELDS if doc.metadata.get(key))
-                       + f"\nContent: {doc.page_content}" for index, doc in enumerate(unique, 1))
+                       + f"\nContent: {doc.page_content}" for index, doc in enumerate(documents, 1))
+
+
+
+_CONTEXT_STOPWORDS = frozenset("""a an and are as at be by can could did do does for from has have how in is it
+of on or that the their these this to was what when where which who why with would
+bị bởi các cho có công của được hay hãy khi không là một những như nào này nếu theo
+thì từ và về với công ty tài liệu dựa trên phân tích bao nhiêu năm khoản khả năng
+điều gì ra hơn như thế nào hiện hành liên quan ảnh hưởng chính sách dụng""".split())
+
+
+def prepare_multi_query_context(documents: list[Document], query: str, questions: list[str],
+                                run_id: str, top_k: int = 6) -> list[Document]:
+    """Conservatively select and arrange evidence for a decomposed multi-source query.
+
+    No model-generated text is introduced. Compression only removes adjacent
+    identical nonblank lines; metadata is copied verbatim and clearly labelled.
+    """
+    sources = {str(doc.metadata.get("source") or "").strip() for doc in documents}
+    if len(questions) < 2 or len(documents) < 2 or "" in sources or len(sources) < 2:
+        logger.info("RAG context run=%s status=skipped reason=single_query_or_source", run_id)
+        return documents
+
+    terms = {term for text in [query, *questions] for term in _tokens(text)
+             if len(term) > 1 and term not in _CONTEXT_STOPWORDS}
+    token_sets = [set(_tokens(doc.page_content)) for doc in documents]
+    frequencies = Counter(term for tokens in token_sets for term in tokens if term in terms)
+    ranked = []
+    for index, (doc, tokens) in enumerate(zip(documents, token_sets)):
+        matched = terms & tokens
+        score = sum(math.log(1 + (len(documents) + 1) / (frequencies[term] + 1)) for term in matched)
+        ranked.append((score, index, doc))
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+    # A zero lexical score is not proof of irrelevance. If every score is zero,
+    # retain the original retrieval order and rely on the answer's uncertainty.
+    positive = [item for item in ranked if item[0] > 0]
+    selected = (positive or ranked)[:top_k]
+    logger.info("RAG context rerank run=%s candidates=%d selected=%d fallback=%s ranking=%s", run_id,
+                len(documents), len(selected), not bool(positive),
+                [(item[2].metadata.get("source", "Unknown"), round(item[0], 3)) for item in ranked])
+
+    prepared = []
+    for score, _, doc in selected:
+        metadata = {field: str(doc.metadata[field]).strip() for field in _METADATA_FIELDS
+                    if doc.metadata.get(field) and str(doc.metadata[field]).strip()}
+        lines = doc.page_content.splitlines()
+        compressed = []
+        for line in lines:
+            if line.strip() and compressed and line.strip() == compressed[-1].strip():
+                continue
+            compressed.append(line)
+        body = "\n".join(compressed)
+        if metadata:
+            body = "Document metadata (as provided): " + "; ".join(
+                f"{field}: {value}" for field, value in metadata.items()) + "\n" + body
+        prepared.append(doc.model_copy(update={"page_content": body}))
+        logger.info("RAG context transform run=%s source=%s contextualized=%s lines_removed=%d", run_id,
+                    doc.metadata.get("source", "Unknown"), bool(metadata), len(lines) - len(compressed))
+
+    # Highest rank first, second highest last, third next to the beginning, etc.
+    ordered = prepared[::2] + prepared[1::2][::-1]
+    logger.info("RAG context order run=%s sources=%s", run_id,
+                [doc.metadata.get("source", "Unknown") for doc in ordered])
+    return ordered
+
+def retrieve(query: str, metadata_filter: dict[str, str] | None = None) -> str:
+    """Compatibility wrapper used by the standalone RAG tool."""
+    try:
+        documents = retrieve_documents(query, metadata_filter)
+    except FileNotFoundError as error:
+        return str(error)
+    return format_documents(documents) if documents else "No relevant information was found in uploaded documents."
