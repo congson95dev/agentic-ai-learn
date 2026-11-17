@@ -178,8 +178,8 @@ async def run_evaluation(
             EvaluationResult(
                 "Answer Correctness",
                 "calculator final answer",
-                "161" in run.answer,
-                f"Expected final answer to contain 161; got {run.answer!r}",
+                run.answer.strip() == "161",
+                f"Expected final answer '161'; got {run.answer!r}",
             ),
             EvaluationResult(
                 "Tool Selection",
@@ -190,7 +190,9 @@ async def run_evaluation(
             EvaluationResult(
                 "Trajectory",
                 "calculator graph path",
-                {"input_guardrail", "router", "data_agent", "final_agent"}.issubset(run.nodes)
+                all(node in run.nodes for node in ("input_guardrail", "router", "data_agent", "final_agent"))
+                and run.nodes.index("input_guardrail") < run.nodes.index("router")
+                < run.nodes.index("data_agent") < run.nodes.index("final_agent")
                 and "calculator" in run.tool_calls
                 and "calculator" in run.tool_results,
                 f"Nodes: {list(run.nodes)}; calls: {list(run.tool_calls)}; results: {list(run.tool_results)}",
@@ -215,11 +217,43 @@ async def run_evaluation(
     return EvaluationReport(tuple(results))
 
 
+def run_rule_checks() -> EvaluationReport:
+    """Deterministic eligibility and evidence checks without model calls."""
+    from agent import EligibilityAnalysis, EligibilityCondition, EligibilityGroup, _eligibility_verdict, _evidence_contains
+
+    evidence = "Revenue must be at least 10 billion. Company revenue is 12 billion. Risk approval is required."
+    good = EligibilityCondition(description="revenue", requirement_quote="Revenue must be at least 10 billion.",
+                                status="met", fact_quote="Company revenue is 12 billion.")
+    missing = EligibilityCondition(description="risk", requirement_quote="Risk approval is required.", status="unknown")
+    invented = good.model_copy(update={"fact_quote": "Company revenue is 99 billion."})
+
+    def verdict(*groups):
+        rules = EligibilityAnalysis(is_eligibility=True, complete_rules=True, logic_supported=True,
+                                    alternatives=[EligibilityGroup(conditions=list(group)) for group in groups])
+        return _eligibility_verdict(rules, evidence)[0]
+
+    checks = [
+        ("eligible with supported facts", verdict([good]), "eligible"),
+        ("missing condition remains unknown", verdict([good, missing]), "unknown"),
+        ("unsupported fact remains unknown", verdict([invented]), "unknown"),
+        ("one supported alternative is sufficient", verdict([missing], [good]), "eligible"),
+    ]
+    results = [EvaluationResult("Eligibility", name, actual == expected,
+                                f"Expected {expected}; got {actual}") for name, actual, expected in checks]
+    notes = "Document retrieval result:\nMissing: invented fact\n\nDocument 1\nSource: a.md\nMetadata: \nContent: actual fact"
+    results.append(EvaluationResult("Evidence", "retrieval notes are not evidence",
+                                    not _evidence_contains(notes, "invented fact") and _evidence_contains(notes, "actual fact"),
+                                    "Only document content is evidence"))
+    return EvaluationReport(tuple(results))
+
+
 async def main() -> int:
     # Import only for CLI execution; agent.py imports this module lazily.
     from agent import run_agent_evaluation
 
-    report = await run_agent_evaluation()
+    manual = run_rule_checks()
+    live = await run_agent_evaluation()
+    report = EvaluationReport(manual.results + live.results)
     print(report.to_markdown())
     return 1 if report.failed_count else 0
 

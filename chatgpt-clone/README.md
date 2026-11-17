@@ -10,7 +10,7 @@ Những thay đổi khác:
 - áp dụng các cách sau để cải thiện retrieval quality trong RAG: adaptive chunking strategy, adaptive search strategy, re-rank, query rewriting trước khi thực hiện retrieval, meta-data filter
 - áp dụng Agentic RAG để khi gặp câu hỏi phức tạp thì chia thành tối đa 4 câu query để truy vấn và liên kết document để đưa ra câu trả lời cuối cùng
 - xử lý lỗi "lost in the middle" bằng 4 steps: Re-rank, Contextualization, Context Compression, Context Ordering
-- có evaluation (1 dạng unit test cho Agentic AI)
+- có evaluation (1 dạng unit test cho Agentic AI) bằng cách viết tay (evaluation.py) và framework DeepEval (deepeval_rag.py)
 
 Techstack: **FastAPI**, **Jinja2**, **LangGraph**, **LangChain**, **MCP**
 
@@ -182,22 +182,40 @@ Các specialist agents gồm web research, weather, aviation, data/calculator, R
 
 ## Evaluation
 
-Là dạng unit test của Agentic AI
-
-Nó cover 5 tiêu chí:
-1. Answer Correctness => check xem trả lời đúng không
-2. Tool Selection => check xem có gọi đúng tool không
-3. Trajectory => check xem thứ tự gọi tool có đúng không
-4. Latency => check thời gian xử lý
-5. Safety / Reliability => check kết quả có loại bỏ secret information hoặc bị hallucinations hay không
-
-How to run:
+Chạy các lệnh sau từ thư mục gốc repository sau khi cài `requirements.txt`:
 
 ```bash
-python3 evaluation.py
+# Các kiểm tra viết tay và một luồng calculator thực tế
+python evaluation.py
+
+# Kiểm thử RAG, eligibility và context bằng model/retrieval giả lập
+python -m unittest discover -s tests
+
+# DeepEval: đánh giá câu trả lời thực với tài liệu mẫu cố định
+python deepeval_rag.py
 ```
 
-Lệnh trên in bảng PASS/FAIL theo năm nhóm trên. Từ đó, có thể dựa vào kết quả này để làm căn cứ dừng deployment tự động trong CICD, hoặc dùng để làm báo cáo.
+`evaluation.py` kiểm tra eligibility, bằng chứng, guardrail, redaction, routing, kết quả calculator, thứ tự node và latency. Router và calculator gọi model thật; các kiểm tra eligibility và evidence không gọi model. Báo cáo là bảng PASS/FAIL và mã thoát khác 0 nếu có case thất bại. Ngưỡng latency mặc định 30 giây, thay đổi qua `AGENT_EVALUATION_MAX_LATENCY_SECONDS`.
+
+DeepEval chạy hai câu hỏi trên nội dung cố định từ `sample-data/loan-company-a.md`, lấy câu trả lời thật từ luồng document answer và dùng Faithfulness cùng Answer Relevancy để chấm. Đây là đánh giá **khâu trả lời với context cho sẵn**, không đo chất lượng retrieval hoặc toàn bộ graph. Ngưỡng mặc định là 0.7, có thể đổi bằng `DEEPEVAL_RAG_THRESHOLD` (từ 0 đến 1); kết quả lỗi hoặc dưới ngưỡng trả mã thoát khác 0.
+
+Hai lệnh gọi model cần cấu hình ít nhất một API key OpenAI, Gemini hoặc Groq như ứng dụng. DeepEval dùng cùng thứ tự provider của ứng dụng cho model giám khảo và phát sinh thêm lượt gọi, chi phí và thời gian; điểm LLM-as-a-judge có thể thay đổi giữa các lần chạy. Bộ case hiện là baseline nhỏ, không chứng minh hệ thống không hallucinate. LangSmith tiếp tục hoạt động theo cấu hình hiện có; dữ liệu gửi đến model và trace cần phù hợp với môi trường sử dụng.
+
+### Các tiêu chí cần phát triển tiếp
+
+| Tiêu chí | Hiện tại | Cần bổ sung |
+| --- | --- | --- |
+| Tỷ lệ hoàn thành task | Chưa đo trực tiếp; báo cáo chỉ đếm số check pass/fail. | Định nghĩa tiêu chí thành công cho từng task và tính số task thành công trên tổng số task. |
+| Độ chính xác khi gọi tool | Kiểm tra calculator được gọi trong một task và lựa chọn agent ở ba case routing. | Thêm nhiều task với tool kỳ vọng; đo lựa chọn tool, tham số và các lượt gọi thừa hoặc thiếu. |
+| Số bước trung bình | Có thu thập danh sách node cho task calculator để kiểm tra thứ tự. | Định nghĩa một bước là gì, ghi số bước từng task và tính trung bình trên dataset. |
+| Token được dùng | Báo cáo eval chưa thu thập hoặc tổng hợp token. | Ghi input/output token theo task và model; tính tổng, trung bình và chi phí khi có dữ liệu giá. LangSmith có thể cung cấp thông tin cho một số trace tùy provider. |
+| Độ trễ mỗi task | Đo end-to-end cho một task calculator và so với ngưỡng. | Đo từng task trong dataset; tổng hợp trung bình và p95, có thể chia theo từng giai đoạn. |
+| Độ đúng và chất lượng kết quả | Kiểm tra đáp án calculator, logic eligibility và hai câu trả lời với DeepEval Faithfulness/Answer Relevancy. | Thêm các task có đáp án hoặc điều kiện kỳ vọng, gồm đủ điều kiện, không đủ điều kiện và thiếu bằng chứng; đánh giá độ đúng và đầy đủ ngoài hai metric hiện có. |
+| Tỷ lệ lỗi | Có số check thất bại và test xử lý lỗi giả lập, nhưng chưa tính tỷ lệ task lỗi. | Ghi lỗi model, tool, retrieval và timeout theo task; tính tỷ lệ task lỗi và phân loại nguyên nhân. |
+| Safety | Có case guardrail và kiểm tra hàm che PII/API key với dữ liệu mẫu. | Kiểm tra rò rỉ dữ liệu trong câu trả lời và trace, các trường hợp vượt guardrail, và hành động cần phê duyệt khi chưa được phép. |
+| Chất lượng retrieval của RAG | Test giả lập kiểm tra truy xuất bổ sung, giới hạn vòng và xử lý lỗi; DeepEval dùng context cố định. | Tạo dataset có tài liệu hoặc đoạn liên quan được đánh nhãn; chạy retriever thực tế và đo khả năng tìm đúng, tìm đủ bằng chứng. |
+
+Một task có thể tạo nhiều check, nên tỷ lệ check pass trong báo cáo **không phải** tỷ lệ hoàn thành task hay tỷ lệ task không lỗi. Để tổng hợp các tiêu chí trên, cần lưu kết quả theo từng task cùng trace, tool call, context, lỗi và các chỉ số sử dụng tài nguyên; tránh ghi dữ liệu nhạy cảm không cần thiết.
 
 ## Guardrail và bảo vệ dữ liệu đầu vào
 

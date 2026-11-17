@@ -1,4 +1,4 @@
-python-dotenv==1.0.1
+python-dotenv>=1.1.1,<2
 
 # old version, use for learn_basic/ (except learn_langgraph.py) and /multi-agent_pipeline-simple-project/
 # langchain==0.2.10
@@ -51,6 +51,9 @@ rich>=13.7.0
 # RAG
 pypdf==6.13.2
 langchain-text-splitters==1.1.2
+
+# Agent and RAG evaluation
+deepeval==3.9.9
 
 # Translator
 argostranslate==1.9.6

@@ -1,5 +1,6 @@
 .env
 venv/
 __pycache__/
+.deepeval/
 langgraph-chatbot/chatbot.db
 faiss_db/
