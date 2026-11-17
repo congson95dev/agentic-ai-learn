@@ -182,9 +182,16 @@ Các specialist agents gồm web research, weather, aviation, data/calculator, R
 
 ## Evaluation
 
-Chạy các lệnh sau từ thư mục gốc repository sau khi cài `requirements.txt`:
+Chạy các lệnh sau từ thư mục `chatgpt-clone` sau khi cài `requirements.txt`:
 
 ```bash
+# Chạy cả hai bộ eval và in tổng kết theo bộ
+python run_evals.py
+
+# Hoặc chọn một bộ
+python run_evals.py --suite manual
+python run_evals.py --suite deepeval
+
 # Các kiểm tra viết tay và một luồng calculator thực tế
 python evaluation.py
 
@@ -194,6 +201,8 @@ python -m unittest discover -s tests
 # DeepEval: đánh giá câu trả lời thực với tài liệu mẫu cố định
 python deepeval_rag.py
 ```
+
+Runner hiển thị kết quả chi tiết của từng bộ, sau đó tổng hợp PASS/FAIL/ERROR theo bộ; tiếp tục chạy các bộ còn lại nếu một bộ thất bại và trả mã thoát khác 0 nếu có bộ không thành công. Tỷ lệ này là **tỷ lệ bộ eval pass**, không phải tỷ lệ task thành công. Mặc định chạy cả hai bộ; `--suite` chọn bộ riêng. Bộ `manual` cũng gọi model thật cho routing và calculator nên vẫn có thể tốn token.
 
 `evaluation.py` kiểm tra eligibility, bằng chứng, guardrail, redaction, routing, kết quả calculator, thứ tự node và latency. Router và calculator gọi model thật; các kiểm tra eligibility và evidence không gọi model. Báo cáo là bảng PASS/FAIL và mã thoát khác 0 nếu có case thất bại. Ngưỡng latency mặc định 30 giây, thay đổi qua `AGENT_EVALUATION_MAX_LATENCY_SECONDS`.
 
